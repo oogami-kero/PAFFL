@@ -322,7 +322,7 @@ def data_to_nparray(data, stoi, vocab_size, max_text_len=None):
         max_text_len = max(text_len)
 
     # initialize the big numpy array by <pad>
-    text = stoi['pad'] * np.ones([len(data), max_text_len],
+    text = stoi['<pad>'] * np.ones([len(data), max_text_len],
                                                dtype=np.int64)
     print('max_len', max_text_len)
 
