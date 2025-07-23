@@ -896,6 +896,7 @@ if __name__ == '__main__':
                 for key in delta:
                     global_update[key] += delta[key] * fed_avg_freqs[idx]
 
+
             for key in global_update:
                 global_w[key] += global_update[key]
 

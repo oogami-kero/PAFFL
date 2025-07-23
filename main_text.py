@@ -852,7 +852,9 @@ if __name__ == '__main__':
             eps = compute_epsilon((round+1)*args.epochs, args.noise_multiplier, args.dp_delta)
             print(f"Approx DP epsilon after {round+1} rounds: {eps:.4f}")
 
+
             global_update = {k: torch.zeros_like(v) for k, v in global_w.items() if torch.is_floating_point(v)}
+
             for idx, delta in enumerate(deltas):
                 for key in delta:
                     global_update[key] += delta[key] * fed_avg_freqs[idx]
