@@ -6,7 +6,7 @@ import torchvision.models as models
 from resnetcifar import ResNet18_cifar10, ResNet50_cifar10
 from torch.distributions import Bernoulli
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from torchtext.vocab import vocab, Vectors, GloVe
+from torchtext.vocab import GloVe
 from embedding.meta import RNN
 from embedding.auxiliary.factory import get_embedding
 

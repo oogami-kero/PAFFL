@@ -537,6 +537,15 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     support_features = l2_normalize(X_out_sup.detach().cpu()).numpy()
                     query_features = l2_normalize(X_out_query.detach().cpu()).numpy()
 
+                    # ---- PATCH START ---------------------------------
+                    # Replace any NaN / ±Inf that may have been produced by l2_normalize
+                    # (zero vectors occasionally sneak through and break scikit-learn).
+                    support_features = np.nan_to_num(
+                        support_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+                    query_features = np.nan_to_num(
+                        query_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+                    # ---- PATCH END -----------------------------------
+
                     clf = LogisticRegression(penalty='l2',
                                              random_state=0,
                                              C=1.0,
@@ -693,7 +702,23 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 if __name__ == '__main__':
     args = get_args()
     print(args)
-    
+
+    # Debug
+    import torch, time
+
+    print(torch.cuda.is_available())  # True
+    print(torch.cuda.current_device())  # 0
+    print(torch.cuda.get_device_name(0))  # GeForce RTX 3070
+    start = time.time()
+    dummy = torch.rand(4096, 4096, device='cuda') @ torch.rand(4096, 4096, device='cuda')
+    torch.cuda.synchronize()
+    print("GEMM time:", time.time() - start, "s")  # should be < 0.2 s
+
+    if torch.cuda.is_available():
+        print(f"Running on GPU {torch.cuda.current_device()}:",
+              torch.cuda.get_device_name(0))
+    # Debug End
+
     if args.dataset=='FC100':
         fine_split_train_map={class_:i for i,class_ in enumerate(fine_split['train'])}
     elif args.dataset=='20newsgroup':
