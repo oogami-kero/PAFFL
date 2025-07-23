@@ -6,7 +6,14 @@ def compute_noisy_delta(global_params, local_params, clip_norm, noise_mult):
     """Compute clipped and noised updates for differential privacy."""
     delta = {}
     for k in global_params:
+
+        if not torch.is_floating_point(global_params[k]):
+            # integer buffers like num_batches_tracked are left unchanged
+            continue
         delta[k] = local_params[k] - global_params[k]
+
+    if not delta:
+        return {}, {}
 
     vec = torch.cat([v.view(-1) for v in delta.values()])
     norm = torch.norm(vec)
