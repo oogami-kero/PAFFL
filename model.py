@@ -17,6 +17,22 @@ def l2_normalize(x):
     return out
 
 
+class TransformLayer(nn.Module):
+    """Per-client affine transform layer from PrivateFL."""
+    def __init__(self, num_features):
+        super().__init__()
+        self.alpha = nn.Parameter(torch.ones(num_features))
+        self.beta = nn.Parameter(torch.zeros(num_features))
+
+    def forward(self, x):
+        if x.dim() == 4:
+            a = self.alpha.view(1, -1, 1, 1)
+            b = self.beta.view(1, -1, 1, 1)
+        else:
+            a = self.alpha.view(1, -1)
+            b = self.beta.view(1, -1)
+        return a * x + b
+
 class DropBlock(nn.Module):
     def __init__(self, block_size):
         super(DropBlock, self).__init__()
@@ -850,6 +866,12 @@ class ModelFed_Adp(nn.Module):
     def __init__(self, base_model, out_dim, n_classes, total_classes, net_configs=None, args=None):
         super(ModelFed_Adp, self).__init__()
 
+        in_channels = 1 if args.dataset in {'femnist', 'emnist', 'xray'} else 3
+        if getattr(args, 'use_transform_layer', 1):
+            self.transform_layer = TransformLayer(in_channels)
+        else:
+            self.transform_layer = nn.Identity()
+
         if base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel" or base_model == "resnet50":
             basemodel = ResNet50_cifar10()
             self.features = nn.Sequential(*list(basemodel.children())[:-1])
@@ -904,7 +926,8 @@ class ModelFed_Adp(nn.Module):
             raise ("Invalid model name. Check the config file and pass one of: resnet18 or resnet50")
 
     def forward(self, x_ori, all_classify=False):
-        h = self.features(x_ori)
+        x_trans = self.transform_layer(x_ori)
+        h = self.features(x_trans)
 
         # print("h before:", h)
         # print("h size:", h.size())
@@ -979,6 +1002,11 @@ class LSTMAtt(nn.Module):
         self.ebd = ebd
         # self.aux = get_embedding(args)
 
+        if getattr(args, 'use_transform_layer', 1):
+            self.transform_layer = TransformLayer(self.ebd.embedding_dim)
+        else:
+            self.transform_layer = nn.Identity()
+
         self.input_dim = self.ebd.embedding_dim  # + self.aux.embedding_dim
 
         # Default settings in induction encoder
@@ -1038,8 +1066,9 @@ class LSTMAtt(nn.Module):
             @return output: batch_size * embedding_dim
         """
 
-        # Apply the word embedding, result:  batch_size, doc_len, embedding_dim
+        # Apply the word embedding then personalize via transform layer
         ebd = self.ebd(data[:, :self.max_text_len])
+        ebd = self.transform_layer(ebd)
 
 
         # add augmented embedding if applicable

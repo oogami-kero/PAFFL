@@ -17,6 +17,7 @@ from PIL import Image
 
 from model import *
 from utils import *
+from dp_utils import compute_noisy_delta, compute_epsilon
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -188,6 +189,10 @@ def get_args():
     parser.add_argument('--save_model',type=int,default=0)
     parser.add_argument('--use_project_head', type=int, default=1)
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
+    parser.add_argument('--use_transform_layer', type=int, default=1, help='toggle the per-client transform layer')
+    parser.add_argument('--clip_norm', type=float, default=1.0, help='max L2 norm for client update')
+    parser.add_argument('--noise_multiplier', type=float, default=0.0, help='noise multiplier for DP')
+    parser.add_argument('--dp_delta', type=float, default=1e-5, help='delta for DP accounting')
     args = parser.parse_args()
     return args
 
@@ -876,14 +881,24 @@ if __name__ == '__main__':
 
             local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
 
-            for net_id, net in enumerate(nets_this_round.values()):
-                net_para = net.state_dict()
-                if net_id == 0:
-                    for key in net_para:
-                        global_w[key] = net_para[key] * fed_avg_freqs[net_id]
-                else:
-                    for key in net_para:
-                        global_w[key] += net_para[key] * fed_avg_freqs[net_id]
+            deltas = []
+            for nid, net in nets_this_round.items():
+                local_params = net.state_dict()
+                noisy_delta, delta_before = compute_noisy_delta(global_w, local_params, args.clip_norm, args.noise_multiplier)
+                sample_before = next(iter(delta_before.values())).view(-1)[:3].cpu()
+                sample_after = next(iter(noisy_delta.values())).view(-1)[:3].cpu()
+                print(f"Delta sample client {nid}: {sample_before.tolist()} -> {sample_after.tolist()}")
+                deltas.append(noisy_delta)
+            eps = compute_epsilon((round+1)*args.epochs, args.noise_multiplier, args.dp_delta)
+            print(f"Approx DP epsilon after {round+1} rounds: {eps:.4f}")
+
+            global_update = {k: torch.zeros_like(v) for k, v in global_w.items() if torch.is_floating_point(v)}
+            for idx, delta in enumerate(deltas):
+                for key in delta:
+                    global_update[key] += delta[key] * fed_avg_freqs[idx]
+
+            for key in global_update:
+                global_w[key] += global_update[key]
 
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
