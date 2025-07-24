@@ -189,6 +189,7 @@ def get_args():
     parser.add_argument('--save_model',type=int,default=0)
     parser.add_argument('--use_project_head', type=int, default=1)
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
+    parser.add_argument('--use_transform_layer', type=int, default=1, help='toggle the per-client transform layer')
     parser.add_argument('--clip_norm', type=float, default=1.0, help='max L2 norm for client update')
     parser.add_argument('--noise_multiplier', type=float, default=0.0, help='noise multiplier for DP')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='delta for DP accounting')
@@ -895,7 +896,6 @@ if __name__ == '__main__':
             for idx, delta in enumerate(deltas):
                 for key in delta:
                     global_update[key] += delta[key] * fed_avg_freqs[idx]
-
 
             for key in global_update:
                 global_w[key] += global_update[key]

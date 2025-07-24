@@ -184,6 +184,7 @@ def get_args():
     parser.add_argument('--save_model',type=int,default=0)
     parser.add_argument('--use_project_head', type=int, default=1)
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
+    parser.add_argument('--use_transform_layer', type=int, default=1, help='toggle the per-client transform layer')
     parser.add_argument('--clip_norm', type=float, default=1.0, help='max L2 norm for client update')
     parser.add_argument('--noise_multiplier', type=float, default=0.0, help='noise multiplier for DP')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='delta for DP accounting')
@@ -851,7 +852,6 @@ if __name__ == '__main__':
                 deltas.append(noisy_delta)
             eps = compute_epsilon((round+1)*args.epochs, args.noise_multiplier, args.dp_delta)
             print(f"Approx DP epsilon after {round+1} rounds: {eps:.4f}")
-
 
             global_update = {k: torch.zeros_like(v) for k, v in global_w.items() if torch.is_floating_point(v)}
 
