@@ -16,6 +16,9 @@ def compute_noisy_delta(global_params, local_params, clip_norm, noise_mult):
 
     vec = torch.cat([v.view(-1) for v in delta.values()])
     norm = torch.norm(vec)
+
+    print(f"DEBUG: Unclipped Delta Norm = {norm.item()}")
+
     scale = min(1.0, clip_norm / (norm + 1e-12))
 
     for k in delta:
