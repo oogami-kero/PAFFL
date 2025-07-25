@@ -925,7 +925,17 @@ if __name__ == '__main__':
             eps = compute_epsilon(dp_steps, args.noise_multiplier, args.dp_delta)
             print(f"Approx DP epsilon after {round+1} rounds: {eps:.4f}")
 
-            global_update = {k: torch.zeros_like(v) for k, v in global_w.items() if torch.is_floating_point(v) and not k.startswith("transform_layer.")}
+            # Aggregate only shared parameters; classifier weights stay private
+            global_update = {
+                k: torch.zeros_like(v)
+                for k, v in global_w.items()
+                if (
+                    torch.is_floating_point(v)
+                    and not k.startswith("transform_layer.")
+                    and k != "few_classify.weight"
+                    and k != "few_classify.bias"
+                )
+            }
             for nid, delta in deltas.items():
                 weight = fed_avg_freqs[nid]
                 for key in delta:
