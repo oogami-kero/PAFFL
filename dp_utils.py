@@ -33,6 +33,8 @@ def compute_noisy_delta(global_params, local_params, clip_norm, noise_mult):
 
     scale = min(1.0, clip_norm / (norm + 1e-12))
 
+    print(f"DEBUG: Clipped Norm = {norm.item() * scale: .4f}")
+
     for k in delta:
         delta[k] = delta[k] * scale
 
