@@ -268,17 +268,26 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     #logger.info('n_test: %d' % X_test.shape[0])
     
     if args_optimizer == 'adam':
-        optimizer = optim.Adam( net.parameters(), lr=lr, weight_decay=args.reg)
+        optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'amsgrad':
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
-                               amsgrad=True)
+        optimizer = optim.Adam(
+            filter(lambda p: p.requires_grad, net.parameters()),
+            lr=lr,
+            weight_decay=args.reg,
+            amsgrad=True,
+        )
     elif args_optimizer == 'sgd':
-        optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=0.05, momentum=0.9,
-                              weight_decay=args.reg)
+        optimizer = optim.SGD(
+            filter(lambda p: p.requires_grad, net.parameters()),
+            lr=0.05,
+            momentum=0.9,
+            weight_decay=args.reg,
+        )
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
 
     def train_epoch(epoch, mode='train'):
+        nonlocal optimizer
 
         if mode == 'train':
 
@@ -302,6 +311,23 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 N = args.N
                 K = 5#args.K
                 Q = args.Q
+            if args_optimizer == 'adam':
+                optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=args.reg)
+            elif args_optimizer == 'amsgrad':
+                optimizer = optim.Adam(
+                    filter(lambda p: p.requires_grad, net.parameters()),
+                    lr=lr,
+                    weight_decay=args.reg,
+                    amsgrad=True,
+                )
+            elif args_optimizer == 'sgd':
+                optimizer = optim.SGD(
+                    filter(lambda p: p.requires_grad, net.parameters()),
+                    lr=0.05,
+                    momentum=0.9,
+                    weight_decay=args.reg,
+                )
+
             net.train()
             optimizer.zero_grad()
             if args.dataset == 'FC100':
@@ -859,8 +885,13 @@ if __name__ == '__main__':
                 else:
                     net_para = net.state_dict()
                     for key in net_para:
-                        if key!='few_classify.weight' and key!='few_classify.bias' and 'transformer' not in key:
-                            net_para[key]=global_w[key]
+                        if (
+                            key != 'few_classify.weight'
+                            and key != 'few_classify.bias'
+                            and 'transformer' not in key
+                            and 'transform_layer' not in key
+                        ):
+                            net_para[key] = global_w[key]
                     net.load_state_dict(net_para)
 
             for k in [1,5]:
