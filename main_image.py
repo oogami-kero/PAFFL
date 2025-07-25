@@ -836,6 +836,7 @@ if __name__ == '__main__':
         best_acc_5=0
         best_confident_acc=0
 
+        dp_steps = 0
         for round in range(n_comm_rounds):
             #logger.info("in comm round:" + str(round))
             party_list_this_round = party_list_rounds[round]
@@ -846,8 +847,8 @@ if __name__ == '__main__':
 
             nets_this_round = {k: nets[k] for k in party_list_this_round}
 
-            total_data_points = sum([len(net_dataidx_map[r]) for r in range(args.n_parties)])
-            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in range(args.n_parties)]
+            total_data_points = sum(len(net_dataidx_map[r]) for r in range(args.n_parties))
+            fed_avg_freqs = {r: len(net_dataidx_map[r]) / total_data_points for r in range(args.n_parties)}
             
             for net_id, net in nets_this_round.items():
                 if use_minus:
@@ -881,21 +882,23 @@ if __name__ == '__main__':
 
             local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
 
-            deltas = []
+            deltas = {}
             for nid, net in nets_this_round.items():
                 local_params = net.state_dict()
                 noisy_delta, delta_before = compute_noisy_delta(global_w, local_params, args.clip_norm, args.noise_multiplier)
                 sample_before = next(iter(delta_before.values())).view(-1)[:3].cpu()
                 sample_after = next(iter(noisy_delta.values())).view(-1)[:3].cpu()
                 print(f"Delta sample client {nid}: {sample_before.tolist()} -> {sample_after.tolist()}")
-                deltas.append(noisy_delta)
-            eps = compute_epsilon((round+1)*args.epochs, args.noise_multiplier, args.dp_delta)
+                deltas[nid] = noisy_delta
+            dp_steps += len(nets_this_round) * args.epochs
+            eps = compute_epsilon(dp_steps, args.noise_multiplier, args.dp_delta)
             print(f"Approx DP epsilon after {round+1} rounds: {eps:.4f}")
 
-            global_update = {k: torch.zeros_like(v) for k, v in global_w.items() if torch.is_floating_point(v)}
-            for idx, delta in enumerate(deltas):
+            global_update = {k: torch.zeros_like(v) for k, v in global_w.items() if torch.is_floating_point(v) and not k.startswith("transform_layer.")}
+            for nid, delta in deltas.items():
+                weight = fed_avg_freqs[nid]
                 for key in delta:
-                    global_update[key] += delta[key] * fed_avg_freqs[idx]
+                    global_update[key] += delta[key] * weight
 
             for key in global_update:
                 global_w[key] += global_update[key]
