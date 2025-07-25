@@ -5,12 +5,18 @@ import torch
 def compute_noisy_delta(global_params, local_params, clip_norm, noise_mult):
     """Compute clipped and noised updates for differential privacy.
 
-    Parameters whose names begin with ``"transform_layer."`` are skipped so that
-    personalized components are never aggregated or shared.
+    Parameters whose names begin with ``"transform_layer."`` or are equal to
+    ``"few_classify.weight"`` or ``"few_classify.bias"`` are skipped so that
+    personalized components and client-specific classifiers are never
+    aggregated or shared.
     """
     delta = {}
     for k in global_params:
-        if k.startswith("transform_layer."):
+        if (
+            k.startswith("transform_layer.")
+            or k == "few_classify.weight"
+            or k == "few_classify.bias"
+        ):
             continue
         if not torch.is_floating_point(global_params[k]):
             # integer buffers like num_batches_tracked are left unchanged
