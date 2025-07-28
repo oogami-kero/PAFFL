@@ -882,8 +882,15 @@ if __name__ == '__main__':
                 sample_after = next(iter(noisy_delta.values())).view(-1)[:3].cpu()
                 print(f"Delta sample client {nid}: {sample_before.tolist()} -> {sample_after.tolist()}")
                 deltas[nid] = noisy_delta
-            dp_steps += len(nets_this_round) * args.epochs
-            eps = compute_epsilon(dp_steps, args.noise_multiplier, args.dp_delta)
+            # Count each noisy aggregation once per round
+            dp_steps += len(nets_this_round)
+            eps = compute_epsilon(
+                dp_steps,
+                args.noise_multiplier,
+                args.dp_delta,
+                accountant="rdp",
+                sampling_rate=args.sample_fraction,
+            )
             print(f"Approx DP epsilon after {round+1} rounds: {eps:.4f}")
 
             # Aggregate only shared parameters; classifier weights stay private
