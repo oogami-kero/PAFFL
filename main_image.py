@@ -279,7 +279,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     elif args_optimizer == 'sgd':
         optimizer = optim.SGD(
             filter(lambda p: p.requires_grad, net.parameters()),
-            lr=0.05,
+            lr=lr,
             momentum=0.9,
             weight_decay=args.reg,
         )
@@ -311,23 +311,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 N = args.N
                 K = 5#args.K
                 Q = args.Q
-            if args_optimizer == 'adam':
-                optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=args.reg)
-            elif args_optimizer == 'amsgrad':
-                optimizer = optim.Adam(
-                    filter(lambda p: p.requires_grad, net.parameters()),
-                    lr=lr,
-                    weight_decay=args.reg,
-                    amsgrad=True,
-                )
-            elif args_optimizer == 'sgd':
-                optimizer = optim.SGD(
-                    filter(lambda p: p.requires_grad, net.parameters()),
-                    lr=0.05,
-                    momentum=0.9,
-                    weight_decay=args.reg,
-                )
-
             net.train()
             optimizer.zero_grad()
             if args.dataset == 'FC100':
