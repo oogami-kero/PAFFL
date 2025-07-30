@@ -7,8 +7,13 @@ This is the code for the paper *Federated Few-shot Learning*, published in SIGKD
 
 ## Requirement:
 ```
-torch==1.11.0+cu113
-torchvision==0.12.0+cu113  
+torch==2.4.0
+torchvision==0.19.0
+torchtext==0.18.0
+numpy
+scikit-learn
+tqdm
+transformers
 ```
 
 
