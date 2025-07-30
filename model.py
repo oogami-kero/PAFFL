@@ -925,14 +925,14 @@ class ModelFed_Adp(nn.Module):
         return ebd, x, y
 
 
-class WORDEBD(nn.Module):
+class WordEmbed(nn.Module):
     '''
         An embedding layer that maps the token id into its corresponding word
         embeddings. The word embeddings are kept as fixed once initialized.
     '''
 
     def __init__(self, finetune_ebd):
-        super(WORDEBD, self).__init__()
+        super(WordEmbed, self).__init__()
         #vectors = Vectors('wiki.en.vec', cache='./')
         vectors = GloVe(name='42B', dim=300)
 
@@ -966,7 +966,7 @@ class LSTMAtt(nn.Module):
     def __init__(self, ebd, out_dim, n_classes, total_classes, args=None):
         super(LSTMAtt, self).__init__()
 
-        # ebd = WORDEBD(args.finetune_ebd)
+        # ebd = WordEmbed(args.finetune_ebd)
 
         self.args = args
         if args.dataset=='20newsgroup':

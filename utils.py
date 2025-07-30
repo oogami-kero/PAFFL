@@ -281,10 +281,7 @@ def compute_accuracy(model, dataloader, get_confusion_matrix=False, device="cpu"
     true_labels_list, pred_labels_list = np.array([]), np.array([])
 
     correct, total = 0, 0
-    if device == 'cpu':
-        criterion = nn.CrossEntropyLoss()
-    elif "cuda" in device.type:
-        criterion = nn.CrossEntropyLoss().cuda()
+    criterion = nn.CrossEntropyLoss().to(device)
     loss_collector = []
     if multiloader:
         for loader in dataloader:
@@ -292,8 +289,7 @@ def compute_accuracy(model, dataloader, get_confusion_matrix=False, device="cpu"
                 for batch_idx, (x, target) in enumerate(loader):
                     # print("x:",x)
                     # print("target:",target)
-                    if device != 'cpu':
-                        x, target = x.cuda(), target.to(dtype=torch.int64).cuda()
+                    x, target = x.to(device), target.to(dtype=torch.int64, device=device)
                     _, _, out = model(x)
                     if len(target) == 1:
                         loss = criterion(out, target)
@@ -315,8 +311,7 @@ def compute_accuracy(model, dataloader, get_confusion_matrix=False, device="cpu"
         with torch.no_grad():
             for batch_idx, (x, target) in enumerate(dataloader):
                 # print("x:",x)
-                if device != 'cpu':
-                    x, target = x.cuda(), target.to(dtype=torch.int64).cuda()
+                x, target = x.to(device), target.to(dtype=torch.int64, device=device)
                 _, _, out = model(x)
                 loss = criterion(out, target)
                 _, pred_label = torch.max(out.data, 1)
@@ -349,15 +344,11 @@ def compute_loss(model, dataloader, device="cpu"):
     if model.training:
         model.eval()
         was_training = True
-    if device == 'cpu':
-        criterion = nn.CrossEntropyLoss()
-    elif "cuda" in device.type:
-        criterion = nn.CrossEntropyLoss().cuda()
+    criterion = nn.CrossEntropyLoss().to(device)
     loss_collector = []
     with torch.no_grad():
         for batch_idx, (x, target) in enumerate(dataloader):
-            if device != 'cpu':
-                x, target = x.cuda(), target.to(dtype=torch.int64).cuda()
+            x, target = x.to(device), target.to(dtype=torch.int64, device=device)
             _, _, out = model(x)
             loss = criterion(out, target)
             loss_collector.append(loss.item())

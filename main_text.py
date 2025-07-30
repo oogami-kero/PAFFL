@@ -16,6 +16,7 @@ from sklearn import metrics
 from PIL import Image
 
 from model import *
+from model import WordEmbed
 from utils import *
 import warnings
 
@@ -225,12 +226,12 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
         
     if args.mode=='few-shot' and args.method=='new':
         if args.dataset=='20newsgroup':
-            ebd=WORDEBD(args.finetune_ebd)
+            ebd=WordEmbed(args.finetune_ebd)
         for net_i in range(n_parties):
             if args.dataset=='FC100' or args.dataset=='miniImageNet':
                 net = ModelFed_Adp(args.model, args.out_dim, n_classes, total_classes, net_configs, args)
             else:
-                net = LSTMAtt(WORDEBD(args.finetune_ebd), args.out_dim, n_classes, total_classes,args)
+                net = LSTMAtt(WordEmbed(args.finetune_ebd), args.out_dim, n_classes, total_classes,args)
             if device == 'cpu':
                 net.to(device)
             else:
