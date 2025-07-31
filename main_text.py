@@ -18,6 +18,7 @@ from PIL import Image
 from model import *
 from model import WordEmbed
 from utils import *
+from privacy_accountant import PrivacyAccountant
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -189,6 +190,8 @@ def get_args():
     parser.add_argument('--use_dp', type=int, default=0, help='enable DP-SGD')
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
+    parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
+    parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
     args = parser.parse_args()
     return args
 
@@ -495,6 +498,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             noise = torch.randn_like(grad) * args.dp_noise * args.dp_clip
                             grad.data.add_(noise)
                 optimizer.step()
+                if accountant is not None:
+                    accountant.step(sample_size=N * (K + Q))
                 ############################
 
                 X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
@@ -584,8 +589,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         for epoch in range(args.num_train_tasks):
             accs_train.append(train_epoch(epoch))
             if np.random.rand() < 0.05:
-                logger.info("Meta-train_Accuracy: {:.4f}".format(np.mean(accs_train)))
-                print("Meta-train_Accuracy: {:.4f}".format(np.mean(accs_train)))
+                logger.info('Meta-train_Accuracy: {:.4f}'.format(np.mean(accs_train)))
+                print('Meta-train_Accuracy: {:.4f}'.format(np.mean(accs_train)))
 
 
         accs=[]
@@ -614,7 +619,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     return  np.mean(accs)
 
 
-def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device="cpu", test_only=False,test_only_k=0):
+def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', accountant=None, test_only=False, test_only_k=0):
     avg_acc = 0.0
     acc_list = []
     max_value_all_clients=[]
@@ -745,6 +750,16 @@ if __name__ == '__main__':
     K=args.K
     Q=args.Q
 
+    accountant = None
+    if args.use_dp:
+        accountant = PrivacyAccountant(
+            noise_multiplier=args.dp_noise,
+            clipping_norm=args.dp_clip,
+            batch_size=N * (K + Q),
+            dataset_size=len(X_train),
+            target_delta=args.dp_delta,
+        )
+
     support_labels=torch.zeros(N*K,dtype=torch.long)
     for i in range(N):
         support_labels[i * K:(i + 1) * K] = i
@@ -816,7 +831,7 @@ if __name__ == '__main__':
                     net.load_state_dict(net_para)
 
             for k in [1,5]:
-                global_acc, max_value_all_clients, indices_all_clients=local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, test_only=True, test_only_k=k)
+                global_acc, max_value_all_clients, indices_all_clients=local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, accountant=accountant, test_only=True, test_only_k=k)
                 global_acc = max(global_acc)
                 if k==1:
                     if global_acc > best_acc:
@@ -831,7 +846,7 @@ if __name__ == '__main__':
                     logger.info(
                         '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
 
-            local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+            local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, accountant=accountant)
 
             for net_id, net in enumerate(nets_this_round.values()):
                 net_para = net.state_dict()
@@ -864,3 +879,7 @@ if __name__ == '__main__':
             if global_acc > best_acc:
                 torch.save(global_model.state_dict(), args.modeldir+'fedavg/'+'globalmodel'+args.log_file_name+'.pth')
                 torch.save(nets[0].state_dict(), args.modeldir+'fedavg/'+'localmodel0'+args.log_file_name+'.pth')
+            if accountant is not None and args.print_eps:
+                eps = accountant.get_epsilon()
+                print('Current epsilon {:.4f}, delta {:.1e}'.format(eps, accountant.target_delta))
+                logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(eps, accountant.target_delta))
