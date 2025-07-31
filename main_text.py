@@ -184,6 +184,11 @@ def get_args():
     parser.add_argument('--save_model',type=int,default=0)
     parser.add_argument('--use_project_head', type=int, default=1)
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
+    parser.add_argument('--use_transform_layer', type=int, default=0,
+                        help='enable personalized transformation layer')
+    parser.add_argument('--use_dp', type=int, default=0, help='enable DP-SGD')
+    parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
+    parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     args = parser.parse_args()
     return args
 
@@ -459,6 +464,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     grad = torch.autograd.grad(loss, param_require_grad.values(), allow_unused=True)
                     for key, grad_ in zip(param_require_grad.keys(), grad):
                         if grad_ == None: continue
+                        if args.use_dp:
+                            grad_ = grad_.clamp(-args.dp_clip, args.dp_clip)
+                            grad_ = grad_ + torch.randn_like(grad_) * args.dp_noise * args.dp_clip
                         net_para[key] = net_para[key] - args.fine_tune_lr * grad_
                     # net_para = list(
                     #                map(lambda p: p[1] - fine_tune_lr * p[0], zip(grad, net_para)))
@@ -477,6 +485,15 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     loss_all += contras_loss / Q *0.1
                 loss_all += loss_ce(out_all, y_total)
                 loss_all.backward()
+                if args.use_dp:
+                    for p in net.parameters():
+                        if p.grad is not None:
+                            grad = p.grad
+                            clip_coeff = args.dp_clip / (grad.data.norm()+1e-6)
+                            if clip_coeff < 1:
+                                grad.data.mul_(clip_coeff)
+                            noise = torch.randn_like(grad) * args.dp_noise * args.dp_clip
+                            grad.data.add_(noise)
                 optimizer.step()
                 ############################
 
@@ -496,6 +513,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 loss += loss_ce(out,out_sup_on_N_class)*0
                 grad = torch.autograd.grad(loss, param_require_grad.values())
                 for key, grad_ in zip(param_require_grad.keys(), grad):
+                    if args.use_dp:
+                        grad_ = grad_.clamp(-args.dp_clip, args.dp_clip)
+                        grad_ = grad_ + torch.randn_like(grad_) * args.dp_noise * args.dp_clip
                     net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
                 net.load_state_dict(net_para_ori)
                 ##################################
@@ -791,7 +811,7 @@ if __name__ == '__main__':
                 else:
                     net_para = net.state_dict()
                     for key in net_para:
-                        if key!='few_classify.weight' and key!='few_classify.bias' and 'transformer' not in key:
+                        if key!='few_classify.weight' and key!='few_classify.bias' and 'transformer' not in key and 'transform_layer' not in key:
                             net_para[key]=global_w[key]
                     net.load_state_dict(net_para)
 
@@ -817,9 +837,13 @@ if __name__ == '__main__':
                 net_para = net.state_dict()
                 if net_id == 0:
                     for key in net_para:
+                        if 'transform_layer' in key:
+                            continue
                         global_w[key] = net_para[key] * fed_avg_freqs[net_id]
                 else:
                     for key in net_para:
+                        if 'transform_layer' in key:
+                            continue
                         global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
             if args.server_momentum:
