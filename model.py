@@ -17,6 +17,18 @@ def l2_normalize(x):
     return out
 
 
+class TransformLayer(nn.Module):
+    """Per-client data transformation layer T_k(x) = alpha * x + beta."""
+
+    def __init__(self, channels=3):
+        super().__init__()
+        self.alpha = nn.Parameter(torch.ones(1, channels, 1, 1))
+        self.beta = nn.Parameter(torch.zeros(1, channels, 1, 1))
+
+    def forward(self, x):
+        return self.alpha * x + self.beta
+
+
 class DropBlock(nn.Module):
     def __init__(self, block_size):
         super(DropBlock, self).__init__()
@@ -850,6 +862,12 @@ class ModelFed_Adp(nn.Module):
     def __init__(self, base_model, out_dim, n_classes, total_classes, net_configs=None, args=None):
         super(ModelFed_Adp, self).__init__()
 
+        self.use_transform = getattr(args, "use_transform_layer", 0)
+        if self.use_transform:
+            self.transform_layer = TransformLayer(channels=3)
+        else:
+            self.transform_layer = None
+
         if base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel" or base_model == "resnet50":
             basemodel = ResNet50_cifar10()
             self.features = nn.Sequential(*list(basemodel.children())[:-1])
@@ -904,6 +922,8 @@ class ModelFed_Adp(nn.Module):
             raise ("Invalid model name. Check the config file and pass one of: resnet18 or resnet50")
 
     def forward(self, x_ori, all_classify=False):
+        if self.transform_layer is not None:
+            x_ori = self.transform_layer(x_ori)
         h = self.features(x_ori)
 
         # print("h before:", h)

@@ -21,7 +21,7 @@ transformers
 
 First download the data file from [here](https://drive.google.com/file/d/1us-iQiY9YSDE9SOX9YohGmnbAyOghqMr/view?usp=sharing) and unzip it into the folder 'data'.  
 
-To run the command for image datasets, i.e., 'miniImageNet' and 'FC100':  
+To run the command for image datasets, i.e., 'miniImageNet' and 'FC100':
 ```
 python main_image.py --dataset dataset_name
 ```
@@ -31,6 +31,21 @@ To run the command for text datasets, i.e., '20newsgroup' and 'huffpost':
 python main_text.py --dataset dataset_name
 ```
 Note that the text model requires the GloVe embedding file named 'glove.42B.300d.zip', which should be put in the main folder. The download link is [here](https://huggingface.co/stanfordnlp/glove/resolve/main/glove.42B.300d.zip).
+
+## New Features
+
+The repository now includes optional support for a **personalised transformation layer** and **DP-SGD** training.
+
+* Enable the transformation layer with `--use_transform_layer 1`. Each client learns its own affine layer `T_k(x) = α ⊙ x + β` that is excluded from model aggregation.
+* Enable DP-SGD with `--use_dp 1`. The following arguments control the behaviour:
+  * `--dp_clip`: clipping norm (default `1.0`)
+  * `--dp_noise`: noise multiplier added after clipping
+
+Example:
+
+```
+python main_image.py --dataset miniImageNet --use_transform_layer 1 --use_dp 1 --dp_clip 0.5 --dp_noise 0.2
+```
 
 ## Citation
 Welcome to cite our work! </br>
