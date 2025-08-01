@@ -18,7 +18,7 @@ from PIL import Image
 from model import *
 from model import WordEmbed
 from utils import *
-from privacy_accountant import PrivacyAccountant
+from opacus.accountants import RDPAccountant
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -499,7 +499,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             grad.data.add_(noise)
                 optimizer.step()
                 if accountant is not None:
-                    accountant.step(sample_size=N * (K + Q))
+                    accountant.step(noise_multiplier=args.dp_noise, sample_rate=sample_rate)
                 ############################
 
                 X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
@@ -751,14 +751,10 @@ if __name__ == '__main__':
     Q=args.Q
 
     accountant = None
+    sample_rate = None
     if args.use_dp:
-        accountant = PrivacyAccountant(
-            noise_multiplier=args.dp_noise,
-            clipping_norm=args.dp_clip,
-            batch_size=N * (K + Q),
-            dataset_size=len(X_train),
-            target_delta=args.dp_delta,
-        )
+        sample_rate = min(1.0, N * (K + Q) / len(X_train))
+        accountant = RDPAccountant()
 
     support_labels=torch.zeros(N*K,dtype=torch.long)
     for i in range(N):
@@ -880,6 +876,6 @@ if __name__ == '__main__':
                 torch.save(global_model.state_dict(), args.modeldir+'fedavg/'+'globalmodel'+args.log_file_name+'.pth')
                 torch.save(nets[0].state_dict(), args.modeldir+'fedavg/'+'localmodel0'+args.log_file_name+'.pth')
             if accountant is not None and args.print_eps:
-                eps = accountant.get_epsilon()
-                print('Current epsilon {:.4f}, delta {:.1e}'.format(eps, accountant.target_delta))
-                logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(eps, accountant.target_delta))
+                eps = accountant.get_epsilon(delta=args.dp_delta)
+                print('Current epsilon {:.4f}, delta {:.1e}'.format(eps, args.dp_delta))
+                logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(eps, args.dp_delta))
