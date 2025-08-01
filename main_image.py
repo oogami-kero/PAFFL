@@ -281,6 +281,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                               weight_decay=args.reg)
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
+    client_sample_size = X_train_client.shape[0]
 
     def train_epoch(epoch, mode='train'):
 
@@ -345,6 +346,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
         if test_only==True:
             K=test_only_k
+
+        support_batch = N * K
+        query_batch = N * Q
+        total_batch = support_batch + query_batch
 
         support_labels = torch.zeros(N * K, dtype=torch.long)
         for i in range(N):
@@ -489,6 +494,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     #                map(lambda p: p[1] - fine_tune_lr * p[0], zip(grad, net_para)))
                     # net_para={key:value for key, value in zip(net.state_dict().keys(),net.state_dict().values())}
                     net_new.load_state_dict(net_para)
+                    if accountant is not None:
+                        accountant.step(noise_multiplier=args.dp_noise,
+                                        sample_size=client_sample_size,
+                                        batch_size=support_batch)
 
                 X_out_query, _, out = net_new(X_total_query)
                 X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
@@ -513,7 +522,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             grad.data.add_(noise)
                 optimizer.step()
                 if accountant is not None:
-                    accountant.step(noise_multiplier=args.dp_noise, sample_rate=sample_rate)
+                    accountant.step(noise_multiplier=args.dp_noise,
+                                    sample_size=client_sample_size,
+                                    batch_size=total_batch)
                 ############################
 
                 X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
@@ -539,6 +550,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         grad_ = grad_ + torch.randn_like(grad_) * args.dp_noise * args.dp_clip
                     net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
                 net.load_state_dict(net_para_ori)
+                if accountant is not None:
+                    accountant.step(noise_multiplier=args.dp_noise,
+                                    sample_size=client_sample_size,
+                                    batch_size=query_batch)
                 ##################################
                 del net_new,X_out_query, out
 
@@ -789,9 +804,7 @@ if __name__ == '__main__':
     Q=args.Q
 
     accountant = None
-    sample_rate = None
     if args.use_dp:
-        sample_rate = min(1.0, N * (K + Q) / len(X_train))
         accountant = RDPAccountant()
 
     support_labels=torch.zeros(N*K,dtype=torch.long)
