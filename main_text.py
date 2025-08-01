@@ -256,8 +256,8 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
     return nets, model_meta_data, layer_type
 
 
-def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_train_client,y_train_client, X_test, y_test,
-                                        device='cpu', test_only=False,test_only_k=0):
+def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_train_client, y_train_client, X_test, y_test,
+                                        device='cpu', accountant=None, test_only=False, test_only_k=0):
 
     
     if args_optimizer == 'adam':
@@ -636,12 +636,12 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
 
         if test_only==False:
-            testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client,y_train_client,X_test, y_test,
-                                        device=device, test_only=False)
+            testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+                                        device=device, accountant=accountant, test_only=False)
         else:
             #np.random.seed(1)
-            testacc, max_values, indices=train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client,y_train_client,X_test, y_test,
-                                        device=device, test_only=True, test_only_k=test_only_k)
+            testacc, max_values, indices = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+                                        device=device, accountant=accountant, test_only=True, test_only_k=test_only_k)
             max_value_all_clients.append(max_values)
             indices_all_clients.append(indices)
             #np.random.seed(int(time.time()))
