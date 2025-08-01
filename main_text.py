@@ -477,9 +477,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     # net_para={key:value for key, value in zip(net.state_dict().keys(),net.state_dict().values())}
                     net_new.load_state_dict(net_para)
                     if accountant is not None:
-                        accountant.step(noise_multiplier=args.dp_noise,
-                                        sample_size=client_sample_size,
-                                        batch_size=support_batch)
+                        accountant.step(
+                            noise_multiplier=args.dp_noise,
+                            sample_rate=support_batch / client_sample_size,
+                        )
 
                 X_out_query, _, out = net_new(X_total_query)
                 X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
@@ -504,9 +505,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             grad.data.add_(noise)
                 optimizer.step()
                 if accountant is not None:
-                    accountant.step(noise_multiplier=args.dp_noise,
-                                    sample_size=client_sample_size,
-                                    batch_size=total_batch)
+                    accountant.step(
+                        noise_multiplier=args.dp_noise,
+                        sample_rate=total_batch / client_sample_size,
+                    )
                 ############################
 
                 X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
@@ -531,9 +533,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
                 net.load_state_dict(net_para_ori)
                 if accountant is not None:
-                    accountant.step(noise_multiplier=args.dp_noise,
-                                    sample_size=client_sample_size,
-                                    batch_size=query_batch)
+                    accountant.step(
+                        noise_multiplier=args.dp_noise,
+                        sample_rate=query_batch / client_sample_size,
+                    )
                 ##################################
                 del net_new,X_out_query, out
 
