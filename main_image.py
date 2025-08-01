@@ -672,12 +672,12 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
 
         if test_only==False:
-            testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client,y_train_client,X_test, y_test,
-                                        device=device, test_only=False)
+            testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+                                        device=device, accountant=accountant, test_only=False)
         else:
             #np.random.seed(1)
-            testacc, max_values, indices=train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client,y_train_client,X_test, y_test,
-                                        device=device, test_only=True, test_only_k=test_only_k)
+            testacc, max_values, indices=train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+                                        device=device, accountant=accountant, test_only=True, test_only_k=test_only_k)
             max_value_all_clients.append(max_values)
             indices_all_clients.append(indices)
             #np.random.seed(int(time.time()))
