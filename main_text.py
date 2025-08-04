@@ -843,8 +843,7 @@ if __name__ == '__main__':
 
             nets_this_round = {k: nets[k] for k in party_list_this_round}
 
-            total_data_points = sum([len(net_dataidx_map[r]) for r in range(args.n_parties)])
-            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in range(args.n_parties)]
+            total_data_points = sum(len(net_dataidx_map[r]) for r in party_list_this_round)
             
             for net_id, net in nets_this_round.items():
                 if use_minus:
@@ -876,6 +875,8 @@ if __name__ == '__main__':
                         '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
 
             local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, accountant=accountant)
+
+            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in party_list_this_round]
 
             for net_id, net in enumerate(nets_this_round.values()):
                 net_para = net.state_dict()
