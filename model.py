@@ -1021,8 +1021,8 @@ class LSTMAtt(nn.Module):
 
         self.all_classify = nn.Linear(out_dim, total_classes)
 
-        encoder_layer = nn.TransformerEncoderLayer(d_model=self.ebd_dim, nhead=4)
-        self.transformer= nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.ebd_dim, nhead=4, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
 
         print(self.state_dict().keys())
 
@@ -1091,7 +1091,10 @@ class LSTMAtt(nn.Module):
 
 
         if not all_classify:
-            x=self.transformer(ebd)
+            x = self.transformer(ebd.unsqueeze(1)).squeeze(1)
+            x = self.l1(x)
+            x = F.relu(x)
+            x = self.l2(x)
             y = self.few_classify(x)
         else:
             x = self.l1(ebd)
