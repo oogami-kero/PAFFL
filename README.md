@@ -37,6 +37,7 @@ Note that the text model requires the GloVe embedding file named 'glove.42B.300d
 The repository now includes optional support for a **personalised transformation layer** and **DP-SGD** training with a privacy accountant.
 
 * Enable the transformation layer with `--use_transform_layer 1`. Each client learns its own affine layer `T_k(x) = α ⊙ x + β` that is excluded from model aggregation.
+
 * Enable DP-SGD with `--use_dp 1`. Training now leverages [Opacus](https://opacus.ai/) `GradSampleModule` and `DPOptimizer` to automatically handle per-sample gradients, clipping, and noise, and `ModuleValidator` to replace unsupported layers like BatchNorm. The following arguments control the behaviour:
   * `--dp_clip`: clipping norm (default `1.0`)
   * `--dp_noise`: noise multiplier added after clipping

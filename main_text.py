@@ -458,6 +458,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             if args.dataset=='fewrel':
                 args.meta_lr=0.001
             net_new = copy.deepcopy(net)
+
             fine_tune_params = [
                 p for name, p in net_new.named_parameters()
                 if name in ('few_classify.weight', 'few_classify.bias') and p.requires_grad
