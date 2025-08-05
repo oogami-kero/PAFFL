@@ -21,6 +21,7 @@ from utils import *
 from opacus import GradSampleModule
 from opacus.accountants import RDPAccountant
 from opacus.optimizers import DPOptimizer
+from opacus.validators import ModuleValidator
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -269,6 +270,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     #logger.info('n_test: %d' % X_test.shape[0])
     
     if args.use_dp:
+        net = ModuleValidator.fix(net)
         net = GradSampleModule(net)
     if args_optimizer == 'adam':
         base_optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=args.reg)
@@ -473,8 +475,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             # _, _, out_all = net(X_total_sup, all_classify=True)
 
             net_new = copy.deepcopy(net)
-            if args.use_dp:
-                net_new = GradSampleModule(net_new)
             fine_tune_params = [
                 p for name, p in net_new.named_parameters()
                 if name in ('few_classify.weight', 'few_classify.bias') and p.requires_grad
