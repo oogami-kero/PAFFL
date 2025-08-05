@@ -141,7 +141,7 @@ class BasicBlock(nn.Module):
 
         if self.downsample is not None:
             residual = self.downsample(x)
-        out += residual
+        out = out + residual
         out = self.relu(out)
         out = self.maxpool(out)
 
@@ -152,7 +152,7 @@ class BasicBlock(nn.Module):
                 gamma = (1 - keep_rate) / self.block_size ** 2 * feat_size ** 2 / (feat_size - self.block_size + 1) ** 2
                 out = self.DropBlock(out, gamma=gamma)
             else:
-                out = F.dropout(out, p=self.drop_rate, training=self.training, inplace=True)
+                out = F.dropout(out, p=self.drop_rate, training=self.training, inplace=False)
 
         return out
 
@@ -926,16 +926,16 @@ class ModelFed_Adp(nn.Module):
             x_ori = self.transform_layer(x_ori)
         h = self.features(x_ori)
 
-        # print("h before:", h)
-        # print("h size:", h.size())
-        ebd = h.squeeze()
-        # print("h after:", h)
+        # print('h before:', h)
+        # print('h size:', h.size())
+        ebd = torch.flatten(h, 1)
+        # print('h after:', h)
         #x = self.l1(h)
         #x = F.relu(x)
         #x = self.l2(x)
 
         if not all_classify:
-            x=self.transformer(ebd)
+            x = self.transformer(ebd.unsqueeze(0)).squeeze(0)
             y = self.few_classify(x)
         else:
             x = self.l1(ebd)
