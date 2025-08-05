@@ -926,16 +926,16 @@ class ModelFed_Adp(nn.Module):
             x_ori = self.transform_layer(x_ori)
         h = self.features(x_ori)
 
-        # print("h before:", h)
-        # print("h size:", h.size())
-        ebd = h.squeeze()
-        # print("h after:", h)
+        # print('h before:', h)
+        # print('h size:', h.size())
+        ebd = torch.flatten(h, 1)
+        # print('h after:', h)
         #x = self.l1(h)
         #x = F.relu(x)
         #x = self.l2(x)
 
         if not all_classify:
-            x=self.transformer(ebd)
+            x = self.transformer(ebd.unsqueeze(0)).squeeze(0)
             y = self.few_classify(x)
         else:
             x = self.l1(ebd)
