@@ -255,18 +255,27 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     
     if args_optimizer == 'adam':
-        optimizer = optim.Adam( net.parameters(), lr=lr, weight_decay=args.reg)
+        optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'amsgrad':
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
-                               amsgrad=True)
+        optimizer = optim.Adam(
+            filter(lambda p: p.requires_grad, net.parameters()),
+            lr=lr,
+            weight_decay=args.reg,
+            amsgrad=True,
+        )
     elif args_optimizer == 'sgd':
-        optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=0.05, momentum=0.9,
-                              weight_decay=args.reg)
+        optimizer = optim.SGD(
+            filter(lambda p: p.requires_grad, net.parameters()),
+            lr=lr,
+            momentum=0.9,
+            weight_decay=args.reg,
+        )
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
     client_sample_size = X_train_client.shape[0]
 
     def train_epoch(epoch, mode='train'):
+        nonlocal optimizer
 
         if mode == 'train':
 
@@ -581,6 +590,15 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     support_features = l2_normalize(X_out_sup.detach().cpu()).numpy()
                     query_features = l2_normalize(X_out_query.detach().cpu()).numpy()
 
+                    # ---- PATCH START ---------------------------------
+                    # Replace any NaN / ±Inf that may have been produced by l2_normalize
+                    # (zero vectors occasionally sneak through and break scikit-learn).
+                    support_features = np.nan_to_num(
+                        support_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+                    query_features = np.nan_to_num(
+                        query_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+                    # ---- PATCH END -----------------------------------
+
                     clf = LogisticRegression(penalty='l2',
                                              random_state=0,
                                              C=1.0,
@@ -716,7 +734,23 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 if __name__ == '__main__':
     args = get_args()
     print(args)
-    
+
+    # Debug
+    import torch, time
+
+    print(torch.cuda.is_available())  # True
+    print(torch.cuda.current_device())  # 0
+    print(torch.cuda.get_device_name(0))  # GeForce RTX 3070
+    start = time.time()
+    dummy = torch.rand(4096, 4096, device='cuda') @ torch.rand(4096, 4096, device='cuda')
+    torch.cuda.synchronize()
+    print("GEMM time:", time.time() - start, "s")  # should be < 0.2 s
+
+    if torch.cuda.is_available():
+        print(f"Running on GPU {torch.cuda.current_device()}:",
+              torch.cuda.get_device_name(0))
+    # Debug End
+
     if args.dataset=='FC100':
         fine_split_train_map={class_:i for i,class_ in enumerate(fine_split['train'])}
     elif args.dataset=='20newsgroup':
@@ -833,6 +867,7 @@ if __name__ == '__main__':
         best_confident_acc=0
         best_acc_5=0
 
+        dp_steps = 0
         for round in range(n_comm_rounds):
             #logger.info("in comm round:" + str(round))
             party_list_this_round = party_list_rounds[round]
@@ -880,7 +915,6 @@ if __name__ == '__main__':
 
             total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
             fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
-
             for net_id, client_id in enumerate(participating_ids):
                 net = nets_this_round[client_id]
                 net_para = net.state_dict()

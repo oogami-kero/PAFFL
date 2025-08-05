@@ -32,6 +32,7 @@ python main_text.py --dataset dataset_name
 ```
 Note that the text model requires the GloVe embedding file named 'glove.42B.300d.zip', which should be put in the main folder. The download link is [here](https://huggingface.co/stanfordnlp/glove/resolve/main/glove.42B.300d.zip).
 
+
 ## New Features
 
 The repository now includes optional support for a **personalised transformation layer** and **DP-SGD** training with a privacy accountant.
@@ -49,6 +50,7 @@ Example:
 python main_image.py --dataset miniImageNet --use_transform_layer 1 --use_dp 1 --dp_clip 0.5 --dp_noise 0.2 --dp_delta 1e-5 --print_eps 1
 ```
 When `--print_eps 1`, the final ε and δ are printed after training.
+
 
 ## Citation
 Welcome to cite our work! </br>

@@ -999,6 +999,11 @@ class LSTMAtt(nn.Module):
         self.ebd = ebd
         # self.aux = get_embedding(args)
 
+        if getattr(args, 'use_transform_layer', 1):
+            self.transform_layer = TransformLayer(self.ebd.embedding_dim)
+        else:
+            self.transform_layer = nn.Identity()
+
         self.input_dim = self.ebd.embedding_dim  # + self.aux.embedding_dim
 
         # Default settings in induction encoder
@@ -1056,8 +1061,9 @@ class LSTMAtt(nn.Module):
             @return output: batch_size * embedding_dim
         """
 
-        # Apply the word embedding, result:  batch_size, doc_len, embedding_dim
+        # Apply the word embedding then personalize via transform layer
         ebd = self.ebd(data[:, :self.max_text_len])
+        ebd = self.transform_layer(ebd)
 
 
         # add augmented embedding if applicable
