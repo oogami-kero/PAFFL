@@ -842,20 +842,22 @@ if __name__ == '__main__':
                 old_w = copy.deepcopy(global_model.state_dict())
 
             nets_this_round = {k: nets[k] for k in party_list_this_round}
+            participating_ids = list(nets_this_round.keys())
 
-            total_data_points = sum(len(net_dataidx_map[r]) for r in party_list_this_round)
-            
-            for net_id, net in nets_this_round.items():
+            total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
+
+            for client_id in participating_ids:
+                net = nets_this_round[client_id]
                 if use_minus:
                     net_para = net.state_dict()
                     for key in net_para:
-                        net_para[key]=(global_w[key]*total_data_points-net_para[key]*len(net_dataidx_map[net_id]))/(total_data_points+1e-9-len(net_dataidx_map[net_id]))    
+                        net_para[key] = (global_w[key] * total_data_points - net_para[key] * len(net_dataidx_map[client_id])) / (total_data_points + 1e-9 - len(net_dataidx_map[client_id]))
                     net.load_state_dict(net_para)
                 else:
                     net_para = net.state_dict()
                     for key in net_para:
-                        if key!='few_classify.weight' and key!='few_classify.bias' and 'transformer' not in key and 'transform_layer' not in key:
-                            net_para[key]=global_w[key]
+                        if key != 'few_classify.weight' and key != 'few_classify.bias' and 'transformer' not in key and 'transform_layer' not in key:
+                            net_para[key] = global_w[key]
                     net.load_state_dict(net_para)
 
             for k in [1,5]:
@@ -876,9 +878,11 @@ if __name__ == '__main__':
 
             local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, accountant=accountant)
 
-            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in party_list_this_round]
+            total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
+            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
 
-            for net_id, net in enumerate(nets_this_round.values()):
+            for net_id, client_id in enumerate(participating_ids):
+                net = nets_this_round[client_id]
                 net_para = net.state_dict()
                 if net_id == 0:
                     for key in net_para:
