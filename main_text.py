@@ -18,9 +18,7 @@ from PIL import Image
 from model import *
 from model import WordEmbed
 from utils import *
-from opacus import GradSampleModule
 from opacus.accountants import RDPAccountant
-from opacus.optimizers import DPOptimizer
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -255,22 +253,15 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device='cpu', accountant=None, test_only=False, test_only_k=0):
 
-    if args.use_dp:
-        net = GradSampleModule(net)
+    
     if args_optimizer == 'adam':
-        base_optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=args.reg)
+        optimizer = optim.Adam( net.parameters(), lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'amsgrad':
-        base_optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
+        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
                                amsgrad=True)
     elif args_optimizer == 'sgd':
-        base_optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=0.05, momentum=0.9,
+        optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=0.05, momentum=0.9,
                               weight_decay=args.reg)
-    optimizer = DPOptimizer(
-        base_optimizer,
-        noise_multiplier=args.dp_noise,
-        max_grad_norm=args.dp_clip,
-        expected_batch_size=1,
-    ) if args.use_dp else base_optimizer
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
     client_sample_size = X_train_client.shape[0]
@@ -342,8 +333,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         support_batch = N * K
         query_batch = N * Q
         total_batch = support_batch + query_batch
-        if args.use_dp:
-            optimizer.expected_batch_size = total_batch
 
         support_labels = torch.zeros(N * K, dtype=torch.long)
         for i in range(N):
@@ -455,101 +444,120 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
             if args.dataset=='fewrel':
                 args.meta_lr=0.001
-            net_new = copy.deepcopy(net)
-            if args.use_dp:
-                net_new = GradSampleModule(net_new)
-            fine_tune_params = [
-                p for name, p in net_new.named_parameters()
-                if name in ('few_classify.weight', 'few_classify.bias') and p.requires_grad
-            ]
+                #args.fine_tune_steps=0
             if args.fine_tune_steps>0:
-                if args.use_dp:
-                    fine_tune_optimizer = DPOptimizer(
-                        optim.SGD(fine_tune_params, lr=args.fine_tune_lr),
-                        noise_multiplier=args.dp_noise,
-                        max_grad_norm=args.dp_clip,
-                        expected_batch_size=support_batch,
-                    )
-                else:
-                    fine_tune_optimizer = optim.SGD(fine_tune_params, lr=args.fine_tune_lr)
+                net_new = copy.deepcopy(net)
 
                 for j in range(args.fine_tune_steps):
-                    fine_tune_optimizer.zero_grad()
-                    _, _, out = net_new(X_total_sup)
-                    loss = F.cross_entropy(out, support_labels)
-                    loss.backward()
-                    fine_tune_optimizer.step()
-                    if accountant is not None and args.use_dp:
+                    X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
+                    losses = F.cross_entropy(out, support_labels, reduction='none')
+
+                    net_para = net_new.state_dict()
+                    param_require_grad = {}
+                    for key, param in net_new.named_parameters():
+                        if key == 'few_classify.weight' or key == 'few_classify.bias':
+                            if param.requires_grad:
+                                param_require_grad[key] = param
+
+                    if args.use_dp:
+                        per_sample_grads = []
+                        for i in range(losses.size(0)):
+                            grad_i = torch.autograd.grad(losses[i], param_require_grad.values(), retain_graph=True, allow_unused=True)
+                            per_sample_grads.append(grad_i)
+                        per_param_grads = []
+                        params_list = list(param_require_grad.values())
+                        for idx in range(len(params_list)):
+                            grads = []
+                            for g in per_sample_grads:
+                                grads.append(g[idx] if g[idx] is not None else torch.zeros_like(params_list[idx]))
+                            per_param_grads.append(torch.stack(grads))
+                        dp_grads = dp_clip_and_noise(per_param_grads, args.dp_clip, args.dp_noise)
+                        for key, grad_ in zip(param_require_grad.keys(), dp_grads):
+                            net_para[key] = net_para[key] - args.fine_tune_lr * grad_
+                    else:
+                        loss = losses.mean()
+                        grad = torch.autograd.grad(loss, param_require_grad.values(), allow_unused=True)
+                        for key, grad_ in zip(param_require_grad.keys(), grad):
+                            if grad_ is None:
+                                continue
+                            net_para[key] = net_para[key] - args.fine_tune_lr * grad_
+                    # net_para = list(
+                    #                map(lambda p: p[1] - fine_tune_lr * p[0], zip(grad, net_para)))
+                    # net_para={key:value for key, value in zip(net.state_dict().keys(),net.state_dict().values())}
+                    net_new.load_state_dict(net_para)
+                    if accountant is not None:
                         accountant.step(
                             noise_multiplier=args.dp_noise,
                             sample_rate=support_batch / client_sample_size,
                         )
 
-            X_out_query, _, out = net_new(X_total_query)
-            X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
+                X_out_query, _, out = net_new(X_total_query)
+                X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
 
-            X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
-            #############################
-            # Q=K here update for all-model
-            for j in range(Q):
-                contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q],
-                                                         tau=0.5)
-                loss_all += contras_loss / Q *0.1
-            loss_all += loss_ce(out_all, y_total)
-            loss_all.backward()
-            optimizer.step()
-            if accountant is not None and args.use_dp:
-                accountant.step(
-                    noise_multiplier=args.dp_noise,
-                    sample_rate=total_batch / client_sample_size,
-                )
-            ############################
-
-            X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-            ###################################
-            # few_classify update
-            net_para_ori=net.state_dict()
-            param_require_grad={}
-            for key, param in net_new.named_parameters():
-                if key=='few_classify.weight' or key=='few_classify.bias' or 'transformer' in key:
-                    #if key != 'module.all_classify.weight' and key != 'module.all_classify.bias':
-                    param_require_grad[key]=param
-
-                # meta-update few-classifier on query
-                out_sup_on_N_class = out_all[N * K:, transformed_class_list]
-                aux_loss = F.cross_entropy(out, out_sup_on_N_class.detach()) * 0
-                loss = F.cross_entropy(out, query_labels) + aux_loss
+                X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
+                #############################
+                # Q=K here update for all-model
+                for j in range(Q):
+                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q],
+                                                             tau=0.5)
+                    loss_all += contras_loss / Q *0.1
+                loss_all += loss_ce(out_all, y_total)
+                loss_all.backward()
                 if args.use_dp:
-                    outer_optimizer = DPOptimizer(
-                        optim.SGD(param_require_grad.values(), lr=args.meta_lr),
+                    torch.nn.utils.clip_grad_norm_(net.parameters(), args.dp_clip)
+                    for p in net.parameters():
+                        if p.grad is not None:
+                            noise = torch.randn_like(p.grad) * args.dp_noise * args.dp_clip / total_batch
+                            p.grad.add_(noise)
+                optimizer.step()
+                if accountant is not None:
+                    accountant.step(
                         noise_multiplier=args.dp_noise,
-                        max_grad_norm=args.dp_clip,
-                        expected_batch_size=query_batch,
+                        sample_rate=total_batch / client_sample_size,
                     )
-                    outer_optimizer.zero_grad()
-                    loss.backward()
-                    outer_optimizer.clip_and_accumulate()
-                    outer_optimizer.add_noise()
-                    outer_optimizer.scale_grad()
-                    for key, param in param_require_grad.items():
-                        if param.grad is not None:
-                            net_para_ori[key] = net_para_ori[key] - args.meta_lr * param.grad
-                    net.load_state_dict(net_para_ori)
-                    outer_optimizer.zero_grad()
-                    if accountant is not None:
-                        accountant.step(
-                            noise_multiplier=args.dp_noise,
-                            sample_rate=query_batch / client_sample_size,
-                        )
+                ############################
+
+                X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+                ###################################
+                # few_classify update
+                net_para_ori=net.state_dict()
+                param_require_grad={}
+                for key, param in net_new.named_parameters():
+                    if key=='few_classify.weight' or key=='few_classify.bias' or 'transformer' in key:
+                    #if key != 'module.all_classify.weight' and key != 'module.all_classify.bias':
+                        param_require_grad[key]=param
+
+                #meta-update few-classifier on query
+                losses = F.cross_entropy(out, query_labels, reduction='none')
+                out_sup_on_N_class = out_all[N * K:, transformed_class_list]
+                aux_loss = F.cross_entropy(out, out_sup_on_N_class.detach(), reduction='none') * 0
+                losses = losses + aux_loss
+                if args.use_dp:
+                    per_sample_grads = []
+                    for i in range(losses.size(0)):
+                        grad_i = torch.autograd.grad(losses[i], param_require_grad.values(), retain_graph=True, allow_unused=True)
+                        per_sample_grads.append(grad_i)
+                    per_param_grads = []
+                    params_list = list(param_require_grad.values())
+                    for idx in range(len(params_list)):
+                        grads = []
+                        for g in per_sample_grads:
+                            grads.append(g[idx] if g[idx] is not None else torch.zeros_like(params_list[idx]))
+                        per_param_grads.append(torch.stack(grads))
+                    dp_grads = dp_clip_and_noise(per_param_grads, args.dp_clip, args.dp_noise)
+                    for key, grad_ in zip(param_require_grad.keys(), dp_grads):
+                        net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
                 else:
-                    for p in param_require_grad.values():
-                        p.grad = None
-                    loss.backward()
-                    for key, param in param_require_grad.items():
-                        if param.grad is not None:
-                            net_para_ori[key] = net_para_ori[key] - args.meta_lr * param.grad
-                            param.grad.zero_()
-                    net.load_state_dict(net_para_ori)
+                    loss = losses.mean()
+                    grad = torch.autograd.grad(loss, param_require_grad.values())
+                    for key, grad_ in zip(param_require_grad.keys(), grad):
+                        net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
+                net.load_state_dict(net_para_ori)
+                if accountant is not None:
+                    accountant.step(
+                        noise_multiplier=args.dp_noise,
+                        sample_rate=query_batch / client_sample_size,
+                    )
                 ##################################
                 del net_new,X_out_query, out
 
