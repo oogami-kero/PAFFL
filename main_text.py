@@ -86,7 +86,7 @@ def InforNCE_Loss(anchor, sample, tau, all_negative=False, temperature_matrix=No
 
     assert anchor.shape[0] == sample.shape[0]
 
-    pos_mask = torch.eye(anchor.shape[0], dtype=torch.float).cuda()
+    pos_mask = torch.eye(anchor.shape[0], dtype=torch.float).to(anchor.device)
     neg_mask = 1. - pos_mask
     sim = _similarity(anchor, sample / temperature_matrix if temperature_matrix != None else sample) / tau
     exp_sim = torch.exp(sim) * (pos_mask + neg_mask)
@@ -234,10 +234,7 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
                 net = ModelFed_Adp(args.model, args.out_dim, n_classes, total_classes, net_configs, args)
             else:
                 net = LSTMAtt(WordEmbed(args.finetune_ebd), args.out_dim, n_classes, total_classes,args)
-            if device == 'cpu':
-                net.to(device)
-            else:
-                net = net.cuda()
+            net.to(device)
             nets[net_i] = net
 
             
@@ -340,9 +337,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         query_labels = torch.zeros(N * Q, dtype=torch.long)
         for i in range(N):
             query_labels[i * Q:(i + 1) * Q] = i
-        if args.device != 'cpu':
-            support_labels = support_labels.cuda()
-            query_labels = query_labels.cuda()
+        support_labels = support_labels.to(args.device)
+        query_labels = query_labels.to(args.device)
 
         if mode == 'train':
             if args.dataset=='FC100':
@@ -409,7 +405,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
 
 
-                y_total = torch.cat([torch.cat(y_sup, 0), torch.cat(y_query, 0)], 0).long().cuda()
+                y_total = torch.cat([torch.cat(y_sup, 0), torch.cat(y_query, 0)], 0).long().to(args.device)
         #y_total=torch.tensor(np.concatenate([np.concatenate(y_sup, 0),np.concatenate(y_query, 0)],0)).cuda()
         
         X_total_sup=np.concatenate(X_total_sup, 0)
@@ -421,14 +417,14 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             X_total_transformed_query=[]
             for i in range(X_total_sup.shape[0]):
                 X_total_transformed_sup.append(X_transform(X_total_sup[i]))
-            X_total_sup=torch.stack(X_total_transformed_sup,0).cuda()
+            X_total_sup = torch.stack(X_total_transformed_sup, 0).to(args.device)
 
             for i in range(X_total_query.shape[0]):
                 X_total_transformed_query.append(X_transform(X_total_query[i]))
-            X_total_query=torch.stack(X_total_transformed_query,0).cuda()
+            X_total_query = torch.stack(X_total_transformed_query, 0).to(args.device)
         else:
-            X_total_sup=torch.tensor(X_total_sup).cuda()
-            X_total_query=torch.tensor(X_total_query).cuda()
+            X_total_sup = torch.tensor(X_total_sup, device=args.device)
+            X_total_query = torch.tensor(X_total_query, device=args.device)
 
 
 
@@ -591,7 +587,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                     query_ys_pred = clf.predict(query_features)
 
-                    out=torch.tensor(clf.predict_proba(query_features)).cuda()
+                    out = torch.tensor(clf.predict_proba(query_features), device=query_labels.device)
 
                     acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
                     max_value, index=torch.max(out,-1)
@@ -789,15 +785,12 @@ if __name__ == '__main__':
     if args.use_dp:
         accountant = RDPAccountant()
 
-    support_labels=torch.zeros(N*K,dtype=torch.long)
+    support_labels = torch.zeros(N * K, dtype=torch.long, device=device)
     for i in range(N):
         support_labels[i * K:(i + 1) * K] = i
-    query_labels=torch.zeros(N*Q,dtype=torch.long)
+    query_labels = torch.zeros(N * Q, dtype=torch.long, device=device)
     for i in range(N):
         query_labels[i * Q:(i + 1) * Q] = i
-    if args.device!='cpu':
-        support_labels=support_labels.cuda()
-        query_labels=query_labels.cuda()
     
     
     n_party_per_round = int(args.n_parties * args.sample_fraction)
