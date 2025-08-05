@@ -1024,8 +1024,6 @@ class LSTMAtt(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.ebd_dim, nhead=4, batch_first=True)
         self.transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
 
-        print(self.state_dict().keys())
-
 
 
     def _attention(self, x, text_len):
@@ -1080,26 +1078,14 @@ class LSTMAtt(nn.Module):
 
         # aggregate
         ebd = torch.sum(ebd * alpha.unsqueeze(-1), dim=1)
-        #ebd = ebd.mean(1)
 
-        #x=F.dropout(ebd, p=0.5,training=self.training)
-
-
-        #x = self.l1(ebd)
-        #x = F.relu(x)
-        #x = self.l2(x)
-
-
+        x = self.transformer(ebd.unsqueeze(1)).squeeze(1)
+        x = self.l1(x)
+        x = F.relu(x)
+        x = self.l2(x)
         if not all_classify:
-            x = self.transformer(ebd.unsqueeze(1)).squeeze(1)
-            x = self.l1(x)
-            x = F.relu(x)
-            x = self.l2(x)
             y = self.few_classify(x)
         else:
-            x = self.l1(ebd)
-            x = F.relu(x)
-            x = self.l2(x)
             y = self.all_classify(x)
         return ebd, x, y
 
