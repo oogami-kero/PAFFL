@@ -45,7 +45,7 @@ class DropBlock(nn.Module):
 
             bernoulli = Bernoulli(gamma)
             mask = bernoulli.sample(
-                (batch_size, channels, height - (self.block_size - 1), width - (self.block_size - 1))).cuda()
+                (batch_size, channels, height - (self.block_size - 1), width - (self.block_size - 1))).to(x.device)
             # print((x.sample[-2], x.sample[-1]))
             block_mask = self._compute_block_mask(mask)
             # print (block_mask.size())
@@ -69,12 +69,11 @@ class DropBlock(nn.Module):
 
         offsets = torch.stack(
             [
-                torch.arange(self.block_size).view(-1, 1).expand(self.block_size, self.block_size).reshape(-1),
-                # - left_padding,
-                torch.arange(self.block_size).repeat(self.block_size),  # - left_padding
+                torch.arange(self.block_size, device=mask.device).view(-1, 1).expand(self.block_size, self.block_size).reshape(-1),
+                torch.arange(self.block_size, device=mask.device).repeat(self.block_size),
             ]
-        ).t().cuda()
-        offsets = torch.cat((torch.zeros(self.block_size ** 2, 2).cuda().long(), offsets.long()), 1)
+        ).t()
+        offsets = torch.cat((torch.zeros(self.block_size ** 2, 2, device=mask.device).long(), offsets.long()), 1)
 
         if nr_blocks > 0:
             non_zero_idxs = non_zero_idxs.repeat(self.block_size ** 2, 1)
@@ -1038,8 +1037,7 @@ class LSTMAtt(nn.Module):
         att = att.view(batch_size, max_text_len, 1)  # unnormalized
 
         # create mask
-        idxes = torch.arange(max_text_len, out=torch.cuda.LongTensor(max_text_len,
-                                                                     device=text_len.device)).unsqueeze(0)
+        idxes = torch.arange(max_text_len, device=text_len.device).unsqueeze(0)
         mask = (idxes < text_len.unsqueeze(1)).bool()
         att[~mask] = float('-inf')
 
