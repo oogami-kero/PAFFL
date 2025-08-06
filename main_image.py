@@ -284,6 +284,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             weight_decay=args.reg,
         )
 
+    orig_optimizer = dp_optimizer
+
     if args.dataset == 'fewrel':
         N = args.N * 3
         K = 2
@@ -331,380 +333,390 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
+    result = None
+    try:
 
-    def train_epoch(epoch, mode='train'):
-        nonlocal dp_optimizer, tl_optimizer, gmodel, base_model
-
-        if mode == 'train':
-
-            if args.dataset=='fewrel' :
-                N=args.N*3
-                K=2
-                Q=2
-            elif args.dataset=='huffpost':
-                N = args.N
-                K = 5#args.K
-                Q = args.Q
-            elif args.dataset=='FC100':
-                N=args.N*4
-                K=2
-                Q=2
-            elif args.dataset=='miniImageNet':
-                N=args.N*4
-                K=2
-                Q=2
-            else:
-                N = args.N
-                K = 5#args.K
-                Q = args.Q
-            gmodel.train()
-            dp_optimizer.zero_grad()
-            if tl_optimizer is not None:
-                tl_optimizer.zero_grad()
-            if args.dataset == 'FC100':
-                #X_transform = transform_train(normalize=normalize_fc100, crop_size=32, padding=4)
-                X_transform=    transforms.Compose([
-                    lambda x: Image.fromarray(x),
-                    transforms.RandomCrop(32, padding=4),
-                    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-                    transforms.RandomHorizontalFlip(),
-                    lambda x: np.asarray(x),
-                    transforms.ToTensor(),
-                    normalize_fc100
-                ])
-            else:
-                #X_transform = transform_train(normalize=normalize_mini, crop_size=84)
-                X_transform=    transforms.Compose([
-                    lambda x: Image.fromarray(x),
-                                #transforms.ToPILImage(),
-                    transforms.RandomCrop(84, padding=8),
-                    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-                    transforms.RandomHorizontalFlip(),
-                    lambda x: np.asarray(x),
-                    transforms.ToTensor(),
-                    normalize_mini
-                ])
-
-        else:
-            N=args.N
-            K=args.K
-            Q=args.Q
-            #N=args.N*2
-            gmodel.eval()
-            if args.dataset == 'FC100':
-                X_transform = transform_test(normalize=normalize_fc100)
-            else:
-                X_transform = transform_test(normalize=normalize_mini)
-
-        if test_only==True:
-            K=test_only_k
-
-        support_batch = N * K
-        query_batch = N * Q
-        total_batch = support_batch + query_batch
-        sample_rate = total_batch / client_sample_size
-        if args.use_dp:
-            dp_optimizer.expected_batch_size = total_batch
-            dp_optimizer.sample_rate = sample_rate
-
-        support_labels = torch.zeros(N * K, dtype=torch.long)
-        for i in range(N):
-            support_labels[i * K:(i + 1) * K] = i
-        query_labels = torch.zeros(N * Q, dtype=torch.long)
-        for i in range(N):
-            query_labels[i * Q:(i + 1) * Q] = i
-        if args.device != 'cpu':
-            support_labels = support_labels.cuda()
-            query_labels = query_labels.cuda()
-
-        if mode == 'train':
-            if args.dataset=='FC100':
-                class_dict = fine_split['train']
-            elif args.dataset=='miniImageNet':
-                class_dict=list(range(64))
-            elif args.dataset=='20newsgroup':
-                class_dict=[1, 5, 10, 11, 13, 14, 16, 18]
-            elif args.dataset=='fewrel':
-                class_dict = [0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14, 15, 16, 19, 21,
-                                 22, 24, 25, 26, 27, 28, 30, 31, 32, 33, 34, 35, 36, 37, 38,
-                                 39, 40, 41, 43, 44, 45, 46, 48, 49, 50, 52, 53, 56, 57, 58,
-                                 59, 61, 62, 63, 64, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75,
-                                 76, 77, 78]
-            elif args.dataset=='huffpost':
-                class_dict=list(range(20))
-
-            X=X_train_client
-            y=y_train_client
-            #for i in class_dict:  
-                #class_dict[i] = class_dict[i][:avail_train_num_per_class]
-        elif mode == 'test':
-            if args.dataset=='FC100':
-                class_dict = fine_split['test']
-            elif args.dataset=='miniImageNet':
-                class_dict=list(range(20))
-            elif args.dataset=='20newsgroup':
-                class_dict=[0, 2, 3, 8, 9, 15, 19]
-            elif args.dataset=='fewrel':
-                class_dict = [23, 29, 42, 47, 51, 54, 55, 60, 65, 79]
-            elif args.dataset=='huffpost':
-                class_dict=list(range(25, 41))
-
-            X=X_test
-            y=y_test
-
-        min_size=0
-        while min_size<K+Q:
-            X_class=[]
-            classes = np.random.choice(class_dict, N, replace=False).tolist()
-            for i in classes:
-                X_class.append(X[y==i])      
-            min_size=min([one.shape[0] for one in X_class])
-
-        X_total_sup=[]
-        X_total_query=[]
-        y_sup=[]
-        y_query=[]
-        transformed_class_list=[]
-        for class_, X_class_i in zip(classes, X_class):
-            sample_idx=np.random.choice(list(range(X_class_i.shape[0])), K+Q, replace=False).tolist()
-            X_total_sup.append(X_class_i[sample_idx[:K]])
-            X_total_query.append(X_class_i[sample_idx[K:]])
-            if mode=='train':
-                if args.dataset=='FC100' or args.dataset=='20newsgroup' or args.dataset=='fewrel' or args.dataset=='huffpost':
-                    transformed_class_list.append(fine_split_train_map[class_])
-                    y_sup.append(torch.ones(K)*fine_split_train_map[class_])
-                    y_query.append(torch.ones(Q) * fine_split_train_map[class_])
+        def train_epoch(epoch, mode='train'):
+            nonlocal dp_optimizer, tl_optimizer, gmodel, base_model
+    
+            if mode == 'train':
+    
+                if args.dataset=='fewrel' :
+                    N=args.N*3
+                    K=2
+                    Q=2
+                elif args.dataset=='huffpost':
+                    N = args.N
+                    K = 5#args.K
+                    Q = args.Q
+                elif args.dataset=='FC100':
+                    N=args.N*4
+                    K=2
+                    Q=2
                 elif args.dataset=='miniImageNet':
-                    transformed_class_list.append(class_)
-                    y_sup.append(torch.ones(K)*class_)
-                    y_query.append(torch.ones(Q) * class_)
-
-
-
-
-                y_total = torch.cat([torch.cat(y_sup, 0), torch.cat(y_query, 0)], 0).long().cuda()
-        #y_total=torch.tensor(np.concatenate([np.concatenate(y_sup, 0),np.concatenate(y_query, 0)],0)).cuda()
-        
-        X_total_sup=np.concatenate(X_total_sup, 0)
-        X_total_query=np.concatenate(X_total_query,0)
-
-
-        if args.dataset=='FC100' or args.dataset=='miniImageNet':
-            X_total_transformed_sup=[]
-            X_total_transformed_query=[]
-            for i in range(X_total_sup.shape[0]):
-                X_total_transformed_sup.append(X_transform(X_total_sup[i]))
-            X_total_sup=torch.stack(X_total_transformed_sup,0).cuda()
-
-            for i in range(X_total_query.shape[0]):
-                X_total_transformed_query.append(X_transform(X_total_query[i]))
-            X_total_query=torch.stack(X_total_transformed_query,0).cuda()
-        else:
-            X_total_sup=torch.tensor(X_total_sup).cuda()
-            X_total_query=torch.tensor(X_total_query).cuda()
-
-
-
-
-        #net.load_state_dict(net_para_ori)
-        #_,_,out_all=net_new(torch.cat([X_total_sup, X_total_query],0), all_classify=True)
-
-            #print(out[:3])
-        if mode == 'train':
-            loss_all=0
-            # all_classify update
-            X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-            out_sup=X_out_all[:N*K].reshape([N,K,-1]).transpose(0,1)
-            out_query=X_out_all[N*K:].reshape([N,Q,-1]).transpose(0,1)
-
-
-
-            # _, _, out_all = net(X_total_sup, all_classify=True)
-
-
-
-            if args.fine_tune_steps>0:
-                net_new = copy.deepcopy(base_model)
-
-                for j in range(args.fine_tune_steps):
-                    net_new.zero_grad()
-                    X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
-                    losses = F.cross_entropy(out, support_labels, reduction='none')
-
-                    net_para = net_new.state_dict()
-                    param_require_grad = {}
+                    N=args.N*4
+                    K=2
+                    Q=2
+                else:
+                    N = args.N
+                    K = 5#args.K
+                    Q = args.Q
+                gmodel.train()
+                dp_optimizer.zero_grad()
+                if tl_optimizer is not None:
+                    tl_optimizer.zero_grad()
+                if args.dataset == 'FC100':
+                    #X_transform = transform_train(normalize=normalize_fc100, crop_size=32, padding=4)
+                    X_transform=    transforms.Compose([
+                        lambda x: Image.fromarray(x),
+                        transforms.RandomCrop(32, padding=4),
+                        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
+                        transforms.RandomHorizontalFlip(),
+                        lambda x: np.asarray(x),
+                        transforms.ToTensor(),
+                        normalize_fc100
+                    ])
+                else:
+                    #X_transform = transform_train(normalize=normalize_mini, crop_size=84)
+                    X_transform=    transforms.Compose([
+                        lambda x: Image.fromarray(x),
+                                    #transforms.ToPILImage(),
+                        transforms.RandomCrop(84, padding=8),
+                        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
+                        transforms.RandomHorizontalFlip(),
+                        lambda x: np.asarray(x),
+                        transforms.ToTensor(),
+                        normalize_mini
+                    ])
+    
+            else:
+                N=args.N
+                K=args.K
+                Q=args.Q
+                #N=args.N*2
+                gmodel.eval()
+                if args.dataset == 'FC100':
+                    X_transform = transform_test(normalize=normalize_fc100)
+                else:
+                    X_transform = transform_test(normalize=normalize_mini)
+    
+            if test_only==True:
+                K=test_only_k
+    
+            support_batch = N * K
+            query_batch = N * Q
+            total_batch = support_batch + query_batch
+            sample_rate = total_batch / client_sample_size
+            if args.use_dp:
+                dp_optimizer.expected_batch_size = total_batch
+                dp_optimizer.sample_rate = sample_rate
+    
+            support_labels = torch.zeros(N * K, dtype=torch.long)
+            for i in range(N):
+                support_labels[i * K:(i + 1) * K] = i
+            query_labels = torch.zeros(N * Q, dtype=torch.long)
+            for i in range(N):
+                query_labels[i * Q:(i + 1) * Q] = i
+            if args.device != 'cpu':
+                support_labels = support_labels.cuda()
+                query_labels = query_labels.cuda()
+    
+            if mode == 'train':
+                if args.dataset=='FC100':
+                    class_dict = fine_split['train']
+                elif args.dataset=='miniImageNet':
+                    class_dict=list(range(64))
+                elif args.dataset=='20newsgroup':
+                    class_dict=[1, 5, 10, 11, 13, 14, 16, 18]
+                elif args.dataset=='fewrel':
+                    class_dict = [0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14, 15, 16, 19, 21,
+                                     22, 24, 25, 26, 27, 28, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+                                     39, 40, 41, 43, 44, 45, 46, 48, 49, 50, 52, 53, 56, 57, 58,
+                                     59, 61, 62, 63, 64, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75,
+                                     76, 77, 78]
+                elif args.dataset=='huffpost':
+                    class_dict=list(range(20))
+    
+                X=X_train_client
+                y=y_train_client
+                #for i in class_dict:  
+                    #class_dict[i] = class_dict[i][:avail_train_num_per_class]
+            elif mode == 'test':
+                if args.dataset=='FC100':
+                    class_dict = fine_split['test']
+                elif args.dataset=='miniImageNet':
+                    class_dict=list(range(20))
+                elif args.dataset=='20newsgroup':
+                    class_dict=[0, 2, 3, 8, 9, 15, 19]
+                elif args.dataset=='fewrel':
+                    class_dict = [23, 29, 42, 47, 51, 54, 55, 60, 65, 79]
+                elif args.dataset=='huffpost':
+                    class_dict=list(range(25, 41))
+    
+                X=X_test
+                y=y_test
+    
+            min_size=0
+            while min_size<K+Q:
+                X_class=[]
+                classes = np.random.choice(class_dict, N, replace=False).tolist()
+                for i in classes:
+                    X_class.append(X[y==i])      
+                min_size=min([one.shape[0] for one in X_class])
+    
+            X_total_sup=[]
+            X_total_query=[]
+            y_sup=[]
+            y_query=[]
+            transformed_class_list=[]
+            for class_, X_class_i in zip(classes, X_class):
+                sample_idx=np.random.choice(list(range(X_class_i.shape[0])), K+Q, replace=False).tolist()
+                X_total_sup.append(X_class_i[sample_idx[:K]])
+                X_total_query.append(X_class_i[sample_idx[K:]])
+                if mode=='train':
+                    if args.dataset=='FC100' or args.dataset=='20newsgroup' or args.dataset=='fewrel' or args.dataset=='huffpost':
+                        transformed_class_list.append(fine_split_train_map[class_])
+                        y_sup.append(torch.ones(K)*fine_split_train_map[class_])
+                        y_query.append(torch.ones(Q) * fine_split_train_map[class_])
+                    elif args.dataset=='miniImageNet':
+                        transformed_class_list.append(class_)
+                        y_sup.append(torch.ones(K)*class_)
+                        y_query.append(torch.ones(Q) * class_)
+    
+    
+    
+    
+                    y_total = torch.cat([torch.cat(y_sup, 0), torch.cat(y_query, 0)], 0).long().cuda()
+            #y_total=torch.tensor(np.concatenate([np.concatenate(y_sup, 0),np.concatenate(y_query, 0)],0)).cuda()
+            
+            X_total_sup=np.concatenate(X_total_sup, 0)
+            X_total_query=np.concatenate(X_total_query,0)
+    
+    
+            if args.dataset=='FC100' or args.dataset=='miniImageNet':
+                X_total_transformed_sup=[]
+                X_total_transformed_query=[]
+                for i in range(X_total_sup.shape[0]):
+                    X_total_transformed_sup.append(X_transform(X_total_sup[i]))
+                X_total_sup=torch.stack(X_total_transformed_sup,0).cuda()
+    
+                for i in range(X_total_query.shape[0]):
+                    X_total_transformed_query.append(X_transform(X_total_query[i]))
+                X_total_query=torch.stack(X_total_transformed_query,0).cuda()
+            else:
+                X_total_sup=torch.tensor(X_total_sup).cuda()
+                X_total_query=torch.tensor(X_total_query).cuda()
+    
+    
+    
+    
+            #net.load_state_dict(net_para_ori)
+            #_,_,out_all=net_new(torch.cat([X_total_sup, X_total_query],0), all_classify=True)
+    
+                #print(out[:3])
+            if mode == 'train':
+                loss_all=0
+                # all_classify update
+                X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+                out_sup=X_out_all[:N*K].reshape([N,K,-1]).transpose(0,1)
+                out_query=X_out_all[N*K:].reshape([N,Q,-1]).transpose(0,1)
+    
+    
+    
+                # _, _, out_all = net(X_total_sup, all_classify=True)
+    
+    
+    
+                if args.fine_tune_steps>0:
+                    net_new = copy.deepcopy(base_model)
+    
+                    for j in range(args.fine_tune_steps):
+                        net_new.zero_grad()
+                        X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
+                        losses = F.cross_entropy(out, support_labels, reduction='none')
+    
+                        net_para = net_new.state_dict()
+                        param_require_grad = {}
+                        for key, param in net_new.named_parameters():
+                            if key == 'few_classify.weight' or key == 'few_classify.bias':
+                                if param.requires_grad:
+                                    param_require_grad[key] = param
+    
+                        losses.mean().backward()
+                        for key, param in param_require_grad.items():
+                            if param.grad is None:
+                                continue
+                            net_para[key] = net_para[key] - args.fine_tune_lr * param.grad
+                        net_new.load_state_dict(net_para)
+    
+                    X_out_query, _, out = net_new(X_total_query)
+                    X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
+    
+                    X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
+                    #############################
+                    # Q=K here update for all-model
+                    for j in range(Q):
+                        contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q],
+                                                                 tau=0.5)
+                        loss_all += contras_loss / Q * 0.1
+                    loss_all += loss_ce(out_all, y_total)
+                    loss_all.backward()
+                    dp_optimizer.step()
+                    if tl_optimizer is not None:
+                        tl_optimizer.step()
+                        epsilon = privacy_engine.accountant.get_epsilon(args.dp_delta)
+                        if args.print_eps:
+                            print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
+                            logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
+                    ############################
+    
+                    X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+                    ###################################
+                    # few_classify update
+                    net_para_ori=gmodel.state_dict()
+    
+                    param_require_grad={}
                     for key, param in net_new.named_parameters():
-                        if key == 'few_classify.weight' or key == 'few_classify.bias':
-                            if param.requires_grad:
-                                param_require_grad[key] = param
-
+                        if key=='few_classify.weight' or key=='few_classify.bias' or 'transformer' in key:
+                        #if key != 'module.all_classify.weight' and key != 'module.all_classify.bias':
+                            param_require_grad[key]=param
+    
+                    #meta-update few-classifier on query
+                    losses = F.cross_entropy(out, query_labels, reduction='none')
+                    out_sup_on_N_class = out_all[N * K:, transformed_class_list]
+                    out_sup_on_N_class/=out_sup_on_N_class.sum(-1,keepdim=True)
+                    aux_loss = F.cross_entropy(out, out_sup_on_N_class.detach(), reduction='none') * 0.1
+                    losses = losses + aux_loss
+                    net_new.zero_grad()
                     losses.mean().backward()
                     for key, param in param_require_grad.items():
                         if param.grad is None:
                             continue
-                        net_para[key] = net_para[key] - args.fine_tune_lr * param.grad
-                    net_new.load_state_dict(net_para)
-
-                X_out_query, _, out = net_new(X_total_query)
-                X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
-
-                X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
-                #############################
-                # Q=K here update for all-model
-                for j in range(Q):
-                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q],
-                                                             tau=0.5)
-                    loss_all += contras_loss / Q * 0.1
-                loss_all += loss_ce(out_all, y_total)
-                loss_all.backward()
-                dp_optimizer.step()
-                if tl_optimizer is not None:
-                    tl_optimizer.step()
-                if privacy_engine is not None:
-                    epsilon = privacy_engine.accountant.get_epsilon(args.dp_delta)
-                    if args.print_eps:
-                        print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
-                        logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
-                ############################
-
-                X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-                ###################################
-                # few_classify update
-                net_para_ori=gmodel.state_dict()
-
-                param_require_grad={}
-                for key, param in net_new.named_parameters():
-                    if key=='few_classify.weight' or key=='few_classify.bias' or 'transformer' in key:
-                    #if key != 'module.all_classify.weight' and key != 'module.all_classify.bias':
-                        param_require_grad[key]=param
-
-                #meta-update few-classifier on query
-                losses = F.cross_entropy(out, query_labels, reduction='none')
-                out_sup_on_N_class = out_all[N * K:, transformed_class_list]
-                out_sup_on_N_class/=out_sup_on_N_class.sum(-1,keepdim=True)
-                aux_loss = F.cross_entropy(out, out_sup_on_N_class.detach(), reduction='none') * 0.1
-                losses = losses + aux_loss
-                net_new.zero_grad()
-                losses.mean().backward()
-                for key, param in param_require_grad.items():
-                    if param.grad is None:
-                        continue
-                    net_para_ori[key]=net_para_ori[key]-args.meta_lr*param.grad
-                gmodel.load_state_dict(net_para_ori)
-                base_model.load_state_dict(gmodel.state_dict())
-                ##################################
-                del net_new,X_out_query, out
-
-            if np.random.rand() < 0.005:
-                print('loss: {:.4f}'.format(loss_all.item()))
-
-
-            acc_train = (torch.argmax(out_all, -1) == y_total).float().mean().item()
-
-            del X_out_all,  out_all
-            return acc_train
-
-        else:
-            use_logistic=True
-
-            if use_logistic:
-                with torch.no_grad():
-                    X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0))
-                    X_out_sup=X_out_all[:N*K]
-                    X_out_query=X_out_all[N*K:]
-
-                    support_features = l2_normalize(X_out_sup.detach().cpu()).numpy()
-                    query_features = l2_normalize(X_out_query.detach().cpu()).numpy()
-
-                    # ---- PATCH START ---------------------------------
-                    # Replace any NaN / ±Inf that may have been produced by l2_normalize
-                    # (zero vectors occasionally sneak through and break scikit-learn).
-                    support_features = np.nan_to_num(
-                        support_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-                    query_features = np.nan_to_num(
-                        query_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-                    # ---- PATCH END -----------------------------------
-
-                    clf = LogisticRegression(penalty='l2',
-                                             random_state=0,
-                                             C=1.0,
-                                             solver='lbfgs',
-                                             max_iter=1000,
-                                             multi_class='multinomial')
-                    clf.fit(support_features, support_labels.detach().cpu().numpy())
-
-                    query_ys_pred = clf.predict(query_features)
-
-                    out=torch.tensor(clf.predict_proba(query_features)).cuda()
-
+                        net_para_ori[key]=net_para_ori[key]-args.meta_lr*param.grad
+                    gmodel.load_state_dict(net_para_ori)
+                    base_model.load_state_dict(gmodel.state_dict())
+                    ##################################
+                    del net_new,X_out_query, out
+    
+                if np.random.rand() < 0.005:
+                    print('loss: {:.4f}'.format(loss_all.item()))
+    
+    
+                acc_train = (torch.argmax(out_all, -1) == y_total).float().mean().item()
+    
+                del X_out_all,  out_all
+                return acc_train
+    
+            else:
+                use_logistic=True
+    
+                if use_logistic:
+                    with torch.no_grad():
+                        X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0))
+                        X_out_sup=X_out_all[:N*K]
+                        X_out_query=X_out_all[N*K:]
+    
+                        support_features = l2_normalize(X_out_sup.detach().cpu()).numpy()
+                        query_features = l2_normalize(X_out_query.detach().cpu()).numpy()
+    
+                        # ---- PATCH START ---------------------------------
+                        # Replace any NaN / ±Inf that may have been produced by l2_normalize
+                        # (zero vectors occasionally sneak through and break scikit-learn).
+                        support_features = np.nan_to_num(
+                            support_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+                        query_features = np.nan_to_num(
+                            query_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+                        # ---- PATCH END -----------------------------------
+    
+                        clf = LogisticRegression(penalty='l2',
+                                                 random_state=0,
+                                                 C=1.0,
+                                                 solver='lbfgs',
+                                                 max_iter=1000,
+                                                 multi_class='multinomial')
+                        clf.fit(support_features, support_labels.detach().cpu().numpy())
+    
+                        query_ys_pred = clf.predict(query_features)
+    
+                        out=torch.tensor(clf.predict_proba(query_features)).cuda()
+    
+                        acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
+                        max_value, index=torch.max(out,-1)
+    
+                        #del net_new, X_out_sup, X_out_query, out, param_require_grad, grad
+                        if test_only:
+                            return acc_train, max_value, index
+                        else:
+                            return acc_train
+    
+                    #return metrics.accuracy_score(query_labels.detach().cpu().numpy(), query_ys_pred)
+    
+                else:
+    
                     acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
-                    max_value, index=torch.max(out,-1)
-
-                    #del net_new, X_out_sup, X_out_query, out, param_require_grad, grad
+                    with torch.no_grad():
+                        max_value, index=torch.max(out,-1)
+    
+    
+    
+                    del net_new, X_out_sup, X_out_query, out,net_para, param_require_grad, grad, X_total_query, X_total_sup
                     if test_only:
                         return acc_train, max_value, index
                     else:
                         return acc_train
+        
+        if not test_only:
+            best_acc = 0
+            accs_train = []
+            for epoch in range(args.num_train_tasks):
+                accs_train.append(train_epoch(epoch))
+                if np.random.rand() < 0.05:
+                    logger.info('Meta-train_Accuracy: {:.4f}'.format(np.mean(accs_train)))
+                    print('Meta-train_Accuracy: {:.4f}'.format(np.mean(accs_train)))
 
-                #return metrics.accuracy_score(query_labels.detach().cpu().numpy(), query_ys_pred)
+            accs = []
+            for epoch_test in range(args.num_test_tasks):
+                accs.append(train_epoch(epoch_test, mode='test'))
+            result = np.mean(accs)
+        else:
+            accs = []
+            max_values = []
+            indices = []
+            accs_train = []
 
-            else:
+            #########################################
+            #train before test
+            #for epoch in range(args.num_train_tasks//5):
+            #    accs_train.append(train_epoch(epoch))
+            #########################################
 
-                acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
-                with torch.no_grad():
-                    max_value, index=torch.max(out,-1)
+            for epoch_test in range(args.num_test_tasks * args.num_true_test_ratio):
+                acc, max_value, index = train_epoch(epoch_test, mode='test')
+                accs.append(acc)
+                max_values.append(max_value)
+                indices.append(index)
+                del acc, max_value, index
+            result = (np.mean(accs), torch.cat(max_values, 0), torch.cat(indices, 0))
 
-
-
-                del net_new, X_out_sup, X_out_query, out,net_para, param_require_grad, grad, X_total_query, X_total_sup
-                if test_only:
-                    return acc_train, max_value, index
-                else:
-                    return acc_train
+        if np.random.rand() < 0.3:
+            print("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
+        #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
     
-    if not test_only:
-        best_acc = 0
-        accs_train=[]
-        for epoch in range(args.num_train_tasks):
-            accs_train.append(train_epoch(epoch))
-            if np.random.rand() < 0.05:
-                logger.info('Meta-train_Accuracy: {:.4f}'.format(np.mean(accs_train)))
-                print('Meta-train_Accuracy: {:.4f}'.format(np.mean(accs_train)))
-
-
-        accs=[]
-        for epoch_test in range(args.num_test_tasks):
-            accs.append(train_epoch(epoch_test, mode='test'))
-    else:
-        accs=[]
-        max_values=[]
-        indices=[]
-        accs_train=[]
-
-        #########################################
-        #train before test
-        #for epoch in range(args.num_train_tasks//5):
-        #    accs_train.append(train_epoch(epoch))
-        #########################################
-
-        for epoch_test in range(args.num_test_tasks*args.num_true_test_ratio):
-            acc, max_value, index=train_epoch(epoch_test, mode='test')
-            accs.append(acc)
-            max_values.append(max_value)
-            indices.append(index)
-            del acc, max_value, index
-        if privacy_engine is not None:
-            gmodel, dp_optimizer, _ = privacy_engine.detach()
-        return np.mean(accs), torch.cat(max_values,0), torch.cat(indices,0)
-
-    if np.random.rand()<0.3:
-        print("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
-    #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
-    if privacy_engine is not None:
-        gmodel, dp_optimizer, _ = privacy_engine.detach()
-    return  np.mean(accs)
-
-
+    
+    finally:
+        if args.use_dp:
+            if hasattr(privacy_engine, 'detach'):
+                gmodel, dp_optimizer, _ = privacy_engine.detach()
+                privacy_engine = None
+            else:
+                for p in gmodel.parameters():
+                    if hasattr(p, 'grad_sample'):
+                        del p.grad_sample
+                    if hasattr(p, 'grad_sample_stack'):
+                        del p.grad_sample_stack
+                dp_optimizer = orig_optimizer
+                gmodel = base_model
+    return result
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
     avg_acc = 0.0
     acc_list = []
