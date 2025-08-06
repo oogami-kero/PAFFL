@@ -260,6 +260,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     dp_params = [p for n, p in gmodel.named_parameters() if 'transform_layer' not in n and p.requires_grad]
     tl_params = [p for n, p in gmodel.named_parameters() if 'transform_layer' in n and p.requires_grad]
+    client_sample_size = X_train_client.shape[0]
 
     if args_optimizer == 'adam':
         dp_optimizer = optim.Adam(dp_params, lr=lr, weight_decay=args.reg)
@@ -283,18 +284,40 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         noise_mult = getattr(args, 'dp_noise', 0.0)
         clip = getattr(args, 'dp_clip', 1.0)
         privacy_engine = PrivacyEngine(accountant='rdp')
-        gmodel, dp_optimizer = privacy_engine.make_private_with_noise(
+        if args.dataset == 'fewrel':
+            train_N = args.N * 4
+            train_K = 2
+            train_Q = 2
+        elif args.dataset == 'huffpost':
+            train_N = args.N
+            train_K = 5
+            train_Q = args.Q
+        elif args.dataset == 'FC100':
+            train_N = args.N * 4
+            train_K = 2
+            train_Q = 2
+        elif args.dataset == 'miniImageNet':
+            train_N = args.N * 4
+            train_K = 2
+            train_Q = 2
+        else:
+            train_N = args.N
+            train_K = 5
+            train_Q = args.Q
+        total_batch = train_N * (train_K + train_Q)
+        sample_rate = total_batch / client_sample_size
+        gmodel, dp_optimizer, _ = privacy_engine.make_private(
             module=gmodel,
             optimizer=dp_optimizer,
             noise_multiplier=noise_mult,
             max_grad_norm=clip,
+            sample_rate=sample_rate,
         )
     tl_optimizer = None
     if tl_params:
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
-    client_sample_size = X_train_client.shape[0]
 
     def train_epoch(epoch, mode='train'):
         nonlocal dp_optimizer, tl_optimizer, gmodel, base_model
