@@ -689,6 +689,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             if hasattr(privacy_engine, 'detach'):
                 gmodel, dp_optimizer, _ = privacy_engine.detach()
                 privacy_engine = None
+                gmodel.train()
             else:
                 for p in gmodel.parameters():
                     if hasattr(p, 'grad_sample'):
@@ -697,6 +698,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         del p.grad_sample_stack
                 dp_optimizer = orig_optimizer
                 gmodel = base_model
+                gmodel.train()
         base_model.train()
     return result
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
@@ -716,10 +718,12 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
 
         if test_only==False:
+            net.train()
             testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device=device, test_only=False)
         else:
             #np.random.seed(1)
+            net.train()
             testacc, max_values, indices = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device=device, test_only=True, test_only_k=test_only_k)
             max_value_all_clients.append(max_values)
