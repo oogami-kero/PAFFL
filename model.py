@@ -915,7 +915,7 @@ class ModelFed_Adp(nn.Module):
 
         self.all_classify = nn.Linear(out_dim, total_classes)
 
-        encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4, batch_first=True)
         transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
         if getattr(args, 'use_dp', 0):
             self.transformer = ModuleValidator.fix(transformer)
@@ -940,14 +940,14 @@ class ModelFed_Adp(nn.Module):
 
         # print("h before:", h)
         # print("h size:", h.size())
-        ebd = h.squeeze()
+        ebd = h.view(h.size(0), -1)
         # print("h after:", h)
         #x = self.l1(h)
         #x = F.relu(x)
         #x = self.l2(x)
 
         if not all_classify:
-            x=self.transformer(ebd)
+            x = self.transformer(ebd.unsqueeze(1)).squeeze(1)
             y = self.few_classify(x)
         else:
             x = self.l1(ebd)
