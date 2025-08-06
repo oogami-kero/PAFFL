@@ -532,25 +532,23 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     
                 if args.fine_tune_steps>0:
                     net_new = copy.deepcopy(base_model)
-    
+
                     for j in range(args.fine_tune_steps):
                         net_new.zero_grad()
                         X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
                         losses = F.cross_entropy(out, support_labels, reduction='none')
-    
-                        net_para = net_new.state_dict()
-                        param_require_grad = {}
-                        for key, param in net_new.named_parameters():
-                            if key == 'few_classify.weight' or key == 'few_classify.bias':
-                                if param.requires_grad:
-                                    param_require_grad[key] = param
-    
+
+                        params_to_update = []
+                        for name, param in net_new.named_parameters():
+                            if name in ('few_classify.weight', 'few_classify.bias') and param.requires_grad:
+                                params_to_update.append(param)
+
                         losses.mean().backward()
-                        for key, param in param_require_grad.items():
-                            if param.grad is None:
-                                continue
-                            net_para[key] = net_para[key] - args.fine_tune_lr * param.grad
-                        net_new.load_state_dict(net_para)
+                        with torch.no_grad():
+                            for param in params_to_update:
+                                if param.grad is None:
+                                    continue
+                                param.data.add_(-args.fine_tune_lr * param.grad)
     
                     X_out_query, _, out = net_new(X_total_query)
                     X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
@@ -577,30 +575,28 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
                     ###################################
                     # few_classify update
-                    net_para_ori=gmodel.state_dict()
-    
-                    param_require_grad={}
-                    for key, param in net_new.named_parameters():
-                        if key=='few_classify.weight' or key=='few_classify.bias' or 'transformer' in key:
-                        #if key != 'module.all_classify.weight' and key != 'module.all_classify.bias':
-                            param_require_grad[key]=param
-    
+                    params_to_update = []
+                    for name, param in net_new.named_parameters():
+                        if name in ('few_classify.weight', 'few_classify.bias') or 'transformer' in name:
+                            params_to_update.append((name, param))
+
                     #meta-update few-classifier on query
                     losses = F.cross_entropy(out, query_labels, reduction='none')
                     out_sup_on_N_class = out_all[N * K:, transformed_class_list]
-                    out_sup_on_N_class/=out_sup_on_N_class.sum(-1,keepdim=True)
+                    out_sup_on_N_class /= out_sup_on_N_class.sum(-1, keepdim=True)
                     aux_loss = F.cross_entropy(out, out_sup_on_N_class.detach(), reduction='none') * 0.1
                     losses = losses + aux_loss
                     net_new.zero_grad()
                     losses.mean().backward()
-                    for key, param in param_require_grad.items():
-                        if param.grad is None:
-                            continue
-                        net_para_ori[key]=net_para_ori[key]-args.meta_lr*param.grad
-                    gmodel.load_state_dict(net_para_ori)
+                    with torch.no_grad():
+                        gmodel_params = dict(gmodel.named_parameters())
+                        for name, param in params_to_update:
+                            if param.grad is None:
+                                continue
+                            gmodel_params[name].data.add_(-args.meta_lr * param.grad)
                     base_model.load_state_dict(gmodel.state_dict())
                     ##################################
-                    del net_new,X_out_query, out
+                    del net_new, X_out_query, out
     
                 if np.random.rand() < 0.005:
                     print('loss: {:.4f}'.format(loss_all.item()))
