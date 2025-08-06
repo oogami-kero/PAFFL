@@ -18,6 +18,7 @@ from PIL import Image
 from model import *
 from utils import *
 from dp_utils import compute_noisy_delta, compute_epsilon
+import opacus_custom_samplers  # register custom Opacus samplers
 from opacus import GradSampleModule
 from opacus.optimizers import DPOptimizer
 import warnings
