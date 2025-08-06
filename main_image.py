@@ -260,6 +260,7 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device='cpu', test_only=False, test_only_k=0):
     base_model = net
+    base_model.train()
     gmodel = base_model
 
     client_sample_size = len(y_train_client)
@@ -716,6 +717,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         del p.grad_sample_stack
                 dp_optimizer = orig_optimizer
                 gmodel = base_model
+        base_model.train()
     return result
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
     avg_acc = 0.0
