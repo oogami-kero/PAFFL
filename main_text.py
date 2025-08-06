@@ -20,6 +20,7 @@ from model import WordEmbed
 from utils import *
 from opacus.accountants import RDPAccountant
 from opacus.optimizers import DPOptimizer
+from opacus import GradSampleModule
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -254,9 +255,11 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device='cpu', accountant=None, test_only=False, test_only_k=0):
 
-    
-    dp_params = [p for n, p in net.named_parameters() if 'transform_layer' not in n and p.requires_grad]
-    tl_params = [p for n, p in net.named_parameters() if 'transform_layer' in n and p.requires_grad]
+    base_model = net
+    gmodel = GradSampleModule(base_model)
+
+    dp_params = [p for n, p in gmodel.named_parameters() if 'transform_layer' not in n and p.requires_grad]
+    tl_params = [p for n, p in gmodel.named_parameters() if 'transform_layer' in n and p.requires_grad]
 
     if args_optimizer == 'adam':
         base_opt = optim.Adam(dp_params, lr=lr, weight_decay=args.reg)
@@ -291,7 +294,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     client_sample_size = X_train_client.shape[0]
 
     def train_epoch(epoch, mode='train'):
-        nonlocal dp_optimizer, tl_optimizer
+        nonlocal dp_optimizer, tl_optimizer, gmodel, base_model
 
         if mode == 'train':
 
@@ -315,7 +318,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 N = args.N
                 K = 5#args.K
                 Q = args.Q
-            net.train()
+            gmodel.train()
             dp_optimizer.zero_grad()
             if tl_optimizer is not None:
                 tl_optimizer.zero_grad()
@@ -348,7 +351,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             K=args.K
             Q=args.Q
             #N=args.N*2
-            net.eval()
+            gmodel.eval()
             if args.dataset == 'FC100':
                 X_transform = transform_test(normalize=normalize_fc100)
             else:
@@ -465,7 +468,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         if mode == 'train':
             loss_all=0
             # all_classify update
-            X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+            X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
             out_sup=X_out_all[:N*K].reshape([N,K,-1]).transpose(0,1)
             out_query=X_out_all[N*K:].reshape([N,Q,-1]).transpose(0,1)
 
@@ -474,7 +477,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 args.meta_lr=0.001
                 #args.fine_tune_steps=0
             if args.fine_tune_steps>0:
-                net_new = copy.deepcopy(net)
+                net_new = GradSampleModule(copy.deepcopy(base_model))
 
                 for j in range(args.fine_tune_steps):
                     X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
@@ -541,10 +544,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     )
                 ############################
 
-                X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+                X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
                 ###################################
                 # few_classify update
-                net_para_ori=net.state_dict()
+                net_para_ori=gmodel.state_dict()
                 param_require_grad={}
                 for key, param in net_new.named_parameters():
                     if key=='few_classify.weight' or key=='few_classify.bias' or 'transformer' in key:
@@ -576,12 +579,13 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     grad = torch.autograd.grad(loss, param_require_grad.values())
                     for key, grad_ in zip(param_require_grad.keys(), grad):
                         net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
-                net.load_state_dict(net_para_ori)
+                gmodel.load_state_dict(net_para_ori)
                 if accountant is not None:
                     accountant.step(
                         noise_multiplier=args.dp_noise,
                         sample_rate=query_batch / client_sample_size,
                     )
+                base_model.load_state_dict(gmodel.state_dict())
                 ##################################
                 del net_new,X_out_query, out
 
@@ -598,7 +602,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
             if use_logistic:
                 with torch.no_grad():
-                    X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0))
+                    X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0))
                     X_out_sup=X_out_all[:N*K]
                     X_out_query=X_out_all[N*K:]
 
