@@ -34,7 +34,7 @@ class BasicBlock(nn.Module):
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = norm_layer(planes)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=False)
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = norm_layer(planes)
         self.downsample = downsample
@@ -53,7 +53,7 @@ class BasicBlock(nn.Module):
         if self.downsample is not None:
             identity = self.downsample(x)
 
-        out += identity
+        out = out + identity
         out = self.relu(out)
 
         return out
@@ -81,7 +81,7 @@ class Bottleneck(nn.Module):
         self.bn2 = norm_layer(width)
         self.conv3 = conv1x1(width, planes * self.expansion)
         self.bn3 = norm_layer(planes * self.expansion)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=False)
         self.downsample = downsample
         self.stride = stride
 
@@ -102,7 +102,7 @@ class Bottleneck(nn.Module):
         if self.downsample is not None:
             identity = self.downsample(x)
 
-        out += identity
+        out = out + identity
         out = self.relu(out)
 
         return out
@@ -132,7 +132,7 @@ class ResNetCifar10(nn.Module):
         self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=3, stride=1, padding=1,
                                bias=False)
         self.bn1 = norm_layer(self.inplanes)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=False)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2,
                                        dilate=replace_stride_with_dilation[0])
