@@ -1,5 +1,6 @@
 import math
 import torch
+from opacus.grad_sample import GradSampleModule
 
 
 def remove_dp_hooks(model):
@@ -7,21 +8,36 @@ def remove_dp_hooks(model):
 
     This helper cleans up any Opacus hooks attached to ``model`` and deletes
     gradient sample attributes that may have been added during private
-    training. It is safe to call multiple times.
+    training. If ``model`` is an instance of :class:`GradSampleModule` the base
+    module is unwrapped before processing. Hooks on all submodules are removed
+    and the underlying module is returned, making it safe to wrap again.
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        Model potentially wrapped in ``GradSampleModule``.
+
+    Returns
+    -------
+    torch.nn.Module
+        Unwrapped model with DP hooks removed.
     """
-    hooks = getattr(model, 'autograd_grad_sample_hooks', None)
-    if hooks:
-        if isinstance(hooks, dict):
-            iterable = hooks.values()
-        else:
-            iterable = hooks
-        for h in iterable:
-            h.remove()
-        model.autograd_grad_sample_hooks = [] if isinstance(hooks, list) else {}
-    for p in model.parameters():
-        for attr in ('grad_sample', 'grad_sample_stack'):
-            if hasattr(p, attr):
-                delattr(p, attr)
+    if isinstance(model, GradSampleModule):
+        model = model._module
+
+    for submodule in model.modules():
+        hooks = getattr(submodule, 'autograd_grad_sample_hooks', None)
+        if hooks:
+            iterable = hooks.values() if isinstance(hooks, dict) else hooks
+            for h in iterable:
+                h.remove()
+            submodule.autograd_grad_sample_hooks = [] if isinstance(hooks, list) else {}
+        for p in submodule.parameters(recurse=False):
+            for attr in ('grad_sample', 'grad_sample_stack'):
+                if hasattr(p, attr):
+                    delattr(p, attr)
+
+    return model
 
 def compute_noisy_delta(global_params, local_params, clip_norm, noise_mult):
     """Compute clipped and noised updates for differential privacy.
