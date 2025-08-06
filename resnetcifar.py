@@ -7,6 +7,8 @@ Reference:
 
 import torch
 import torch.nn as nn
+from bn_utils import convert_batchnorm_modules
+from opacus.validators import ModuleValidator
 def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
     """3x3 convolution with padding"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
@@ -211,7 +213,10 @@ def ResNet18_cifar10(**kwargs):
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
-    return ResNetCifar10(BasicBlock, [2, 2, 2, 2], **kwargs)
+    model = ResNetCifar10(BasicBlock, [2, 2, 2, 2], **kwargs)
+    model = convert_batchnorm_modules(model)
+    ModuleValidator.validate(model, strict=True)
+    return model
 
 
 
@@ -223,4 +228,7 @@ def ResNet50_cifar10(**kwargs):
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
-    return ResNetCifar10(Bottleneck, [3, 4, 6, 3], **kwargs)
+    model = ResNetCifar10(Bottleneck, [3, 4, 6, 3], **kwargs)
+    model = convert_batchnorm_modules(model)
+    ModuleValidator.validate(model, strict=True)
+    return model
