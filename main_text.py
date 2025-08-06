@@ -636,13 +636,13 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             max_values.append(max_value)
             indices.append(index)
             del acc, max_value, index
-
+        privacy_engine.detach()
         return np.mean(accs), torch.cat(max_values,0), torch.cat(indices,0)
 
     if np.random.rand()<0.3:
         print("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
     #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
-
+    privacy_engine.detach()
     return  np.mean(accs)
 
 
