@@ -259,7 +259,9 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device='cpu', test_only=False, test_only_k=0):
     base_model = net
-    gmodel = GradSampleModule(base_model)
+    gmodel = base_model
+    if args.use_dp:
+        gmodel = GradSampleModule(base_model)
 
     dp_params = [p for n, p in gmodel.named_parameters() if 'transform_layer' not in n and p.requires_grad]
     tl_params = [p for n, p in gmodel.named_parameters() if 'transform_layer' in n and p.requires_grad]
@@ -281,15 +283,17 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             weight_decay=args.reg,
         )
 
-    noise_mult = getattr(args, 'dp_noise', 0.0) if getattr(args, 'use_dp', 0) else 0.0
-    clip = getattr(args, 'dp_clip', 1.0)
-    privacy_engine = PrivacyEngine(accountant='rdp')
-    gmodel, dp_optimizer = privacy_engine.make_private_with_noise(
-        module=gmodel,
-        optimizer=dp_optimizer,
-        noise_multiplier=noise_mult,
-        max_grad_norm=clip,
-    )
+    privacy_engine = None
+    if args.use_dp:
+        noise_mult = getattr(args, 'dp_noise', 0.0)
+        clip = getattr(args, 'dp_clip', 1.0)
+        privacy_engine = PrivacyEngine(accountant='rdp')
+        gmodel, dp_optimizer = privacy_engine.make_private_with_noise(
+            module=gmodel,
+            optimizer=dp_optimizer,
+            noise_multiplier=noise_mult,
+            max_grad_norm=clip,
+        )
     tl_optimizer = None
     if tl_params:
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
@@ -522,10 +526,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 dp_optimizer.step()
                 if tl_optimizer is not None:
                     tl_optimizer.step()
-                epsilon = privacy_engine.accountant.get_epsilon(args.dp_delta)
-                if args.print_eps:
-                    print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
-                    logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
+                if privacy_engine is not None:
+                    epsilon = privacy_engine.accountant.get_epsilon(args.dp_delta)
+                    if args.print_eps:
+                        print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
+                        logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
                 ############################
 
                 X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
@@ -654,13 +659,15 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             max_values.append(max_value)
             indices.append(index)
             del acc, max_value, index
-        privacy_engine.detach()
+        if privacy_engine is not None:
+            privacy_engine.detach()
         return np.mean(accs), torch.cat(max_values,0), torch.cat(indices,0)
 
     if np.random.rand()<0.3:
         print("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
     #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
-    privacy_engine.detach()
+    if privacy_engine is not None:
+        privacy_engine.detach()
     return  np.mean(accs)
 
 
