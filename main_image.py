@@ -313,7 +313,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     privacy_engine = None
     if args.use_dp:
-        remove_dp_hooks(base_model)
+        base_model = remove_dp_hooks(base_model)
         noise_mult = getattr(args, 'dp_noise', 0.0)
         clip = getattr(args, 'dp_clip', 1.0)
         privacy_engine = PrivacyEngine(accountant='rdp')
@@ -567,6 +567,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     dp_optimizer.step()
                     if tl_optimizer is not None:
                         tl_optimizer.step()
+                    if args.use_dp and privacy_engine is not None:
                         epsilon = privacy_engine.accountant.get_epsilon(args.dp_delta)
                         if args.print_eps:
                             print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
@@ -716,7 +717,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 dp_optimizer = orig_optimizer
                 gmodel = base_model
                 gmodel.train()
-            remove_dp_hooks(gmodel)
+            gmodel = remove_dp_hooks(gmodel)
         base_model.train()
     return result
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
@@ -727,7 +728,8 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
     for net_id, net in nets.items():
         print(net_id)
-        remove_dp_hooks(net)
+        net = remove_dp_hooks(net)
+        nets[net_id] = net
 
         #net.cuda()
 
