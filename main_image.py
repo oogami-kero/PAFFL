@@ -289,7 +289,12 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     noise_mult = getattr(args, 'dp_noise', 0.0) if getattr(args, 'use_dp', 0) else 0.0
     clip = getattr(args, 'dp_clip', 1.0)
-    dp_optimizer = DPOptimizer(base_opt, noise_multiplier=noise_mult, max_grad_norm=clip)
+    dp_optimizer = DPOptimizer(
+        base_opt,
+        noise_multiplier=noise_mult,
+        max_grad_norm=clip,
+        expected_batch_size=1,
+    )
     tl_optimizer = None
     if tl_params:
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
@@ -367,6 +372,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         support_batch = N * K
         query_batch = N * Q
         total_batch = support_batch + query_batch
+        dp_optimizer.expected_batch_size = total_batch
 
         support_labels = torch.zeros(N * K, dtype=torch.long)
         for i in range(N):
