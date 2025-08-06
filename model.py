@@ -894,46 +894,54 @@ class ModelFed_Adp(nn.Module):
 
         if base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel" or base_model == "resnet50":
             basemodel = ResNet50_cifar10()
-            self.features = nn.Sequential(*list(basemodel.children())[:-1])
+            features = nn.Sequential(*list(basemodel.children())[:-1])
             num_ftrs = basemodel.fc.in_features
         elif base_model == "resnet18-cifar10" or base_model == "resnet18":
             basemodel = ResNet18_cifar10()
-            self.features = nn.Sequential(*list(basemodel.children())[:-1])
+            features = nn.Sequential(*list(basemodel.children())[:-1])
             num_ftrs = basemodel.fc.in_features
         elif base_model == "mlp":
-            self.features = MLP_header()
+            features = MLP_header()
             num_ftrs = 512
         elif base_model == 'simple-cnn':
-            self.features = SimpleCNN_header(input_dim=(16 * 18 * 18 if args.dataset == 'miniImageNet' else 16 * 5 * 5),
+            features = SimpleCNN_header(input_dim=(16 * 18 * 18 if args.dataset == 'miniImageNet' else 16 * 5 * 5),
                                              hidden_dims=[120, 84], output_dim=n_classes)
             num_ftrs = 84
         elif base_model == 'simple-cnn-mnist':
-            self.features = SimpleCNNMNIST_header(input_dim=(16 * 4 * 4), hidden_dims=[120, 84], output_dim=n_classes)
+            features = SimpleCNNMNIST_header(input_dim=(16 * 4 * 4), hidden_dims=[120, 84], output_dim=n_classes)
             num_ftrs = 84
         elif base_model == 'resnet12':
 
             if args.dataset=='FC100':
-                self.features = resnet12(avg_pool=True, drop_rate=0.1, dropblock_size=2)
+                features = resnet12(avg_pool=True, drop_rate=0.1, dropblock_size=2)
                 #num_ftrs=2560
                 num_ftrs=640
             else:
-                self.features = resnet12(avg_pool=True, drop_rate=0.1)
+                features = resnet12(avg_pool=True, drop_rate=0.1)
                 #num_ftrs = 16000
                 num_ftrs = 640
 
-        # summary(self.features.to('cuda:0'), (3,32,32))
-        # print("features:", self.features)
         # projection MLP
-        self.l1 = nn.Linear(num_ftrs, num_ftrs)
-        self.l2 = nn.Linear(num_ftrs, out_dim)
+        l1 = nn.Linear(num_ftrs, num_ftrs)
+        l2 = nn.Linear(num_ftrs, out_dim)
 
-        # last layer for few
-        self.few_classify = nn.Linear(num_ftrs, n_classes)
-
-        self.all_classify = nn.Linear(out_dim, total_classes)
+        # classifier for shared representation
+        all_classify = nn.Linear(out_dim, total_classes)
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4)
-        self.transformer= nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
+        transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
+
+        # modules optimized with DP-SGD
+        self.shared = nn.Sequential(
+            features,
+            l1,
+            l2,
+            all_classify,
+            transformer,
+        )
+
+        # last layer for few (kept local)
+        self.few_classify = nn.Linear(num_ftrs, n_classes)
 
         print(self.state_dict().keys())
 
@@ -947,24 +955,18 @@ class ModelFed_Adp(nn.Module):
 
     def forward(self, x_ori, all_classify=False):
         x_trans = self.transform_layer(x_ori)
-        h = self.features(x_trans)
+        h = self.shared[0](x_trans)
 
-        # print("h before:", h)
-        # print("h size:", h.size())
         ebd = h.squeeze()
-        # print("h after:", h)
-        #x = self.l1(h)
-        #x = F.relu(x)
-        #x = self.l2(x)
 
         if not all_classify:
-            x=self.transformer(ebd)
+            x = self.shared[4](ebd)
             y = self.few_classify(x)
         else:
-            x = self.l1(ebd)
+            x = self.shared[1](ebd)
             x = F.relu(x)
-            x = self.l2(x)
-            y = self.all_classify(x)
+            x = self.shared[2](x)
+            y = self.shared[3](x)
         return ebd, x, y
 
 
