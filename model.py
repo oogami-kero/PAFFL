@@ -146,7 +146,7 @@ class BasicBlock(nn.Module):
 
         if self.downsample is not None:
             residual = self.downsample(x)
-        out += residual
+        out = out + residual
         out = self.relu(out)
         out = self.maxpool(out)
 
@@ -157,7 +157,7 @@ class BasicBlock(nn.Module):
                 gamma = (1 - keep_rate) / self.block_size ** 2 * feat_size ** 2 / (feat_size - self.block_size + 1) ** 2
                 out = self.DropBlock(out, gamma=gamma)
             else:
-                out = F.dropout(out, p=self.drop_rate, training=self.training, inplace=True)
+                out = F.dropout(out, p=self.drop_rate, training=self.training, inplace=False)
 
         return out
 
@@ -565,24 +565,24 @@ class ModerateCNN(nn.Module):
         self.conv_layer = nn.Sequential(
             # Conv Layer block 1
             nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
 
             # Conv Layer block 2
             nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
             nn.Dropout2d(p=0.05),
 
             # Conv Layer block 3
             nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
 
@@ -590,10 +590,10 @@ class ModerateCNN(nn.Module):
             nn.Dropout(p=0.1),
             # nn.Linear(4096, 1024),
             nn.Linear(4096, 512),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             # nn.Linear(1024, 512),
             nn.Linear(512, 512),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Dropout(p=0.1),
             nn.Linear(512, output_dim)
         )
@@ -612,24 +612,24 @@ class ModerateCNNCeleba(nn.Module):
         self.conv_layer = nn.Sequential(
             # Conv Layer block 1
             nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
 
             # Conv Layer block 2
             nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
             # nn.Dropout2d(p=0.05),
 
             # Conv Layer block 3
             nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
 
@@ -637,10 +637,10 @@ class ModerateCNNCeleba(nn.Module):
             nn.Dropout(p=0.1),
             # nn.Linear(4096, 1024),
             nn.Linear(4096, 512),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             # nn.Linear(1024, 512),
             nn.Linear(512, 512),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Dropout(p=0.1),
             nn.Linear(512, 2)
         )
@@ -659,33 +659,33 @@ class ModerateCNNMNIST(nn.Module):
         self.conv_layer = nn.Sequential(
             # Conv Layer block 1
             nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
 
             # Conv Layer block 2
             nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
             nn.Dropout2d(p=0.05),
 
             # Conv Layer block 3
             nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
 
         self.fc_layer = nn.Sequential(
             nn.Dropout(p=0.1),
             nn.Linear(2304, 1024),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Linear(1024, 512),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Dropout(p=0.1),
             nn.Linear(512, 10)
         )
@@ -705,33 +705,33 @@ class ModerateCNNContainer(nn.Module):
         self.conv_layer = nn.Sequential(
             # Conv Layer block 1
             nn.Conv2d(in_channels=input_channels, out_channels=num_filters[0], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=num_filters[0], out_channels=num_filters[1], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
 
             # Conv Layer block 2
             nn.Conv2d(in_channels=num_filters[1], out_channels=num_filters[2], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=num_filters[2], out_channels=num_filters[3], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
             nn.Dropout2d(p=0.05),
 
             # Conv Layer block 3
             nn.Conv2d(in_channels=num_filters[3], out_channels=num_filters[4], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(in_channels=num_filters[4], out_channels=num_filters[5], kernel_size=kernel_size, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
 
         self.fc_layer = nn.Sequential(
             nn.Dropout(p=0.1),
             nn.Linear(input_dim, hidden_dims[0]),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Linear(hidden_dims[0], hidden_dims[1]),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Dropout(p=0.1),
             nn.Linear(hidden_dims[1], output_dim)
         )
