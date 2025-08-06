@@ -19,8 +19,7 @@ from model import *
 from model import WordEmbed
 from utils import *
 from opacus.accountants import RDPAccountant
-from opacus.optimizers import DPOptimizer
-from opacus import GradSampleModule
+from opacus import GradSampleModule, PrivacyEngine
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -259,7 +258,7 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 
 
 def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_train_client, y_train_client, X_test, y_test,
-                                        device='cpu', accountant=None, test_only=False, test_only_k=0):
+                                        device='cpu', test_only=False, test_only_k=0):
     base_model = net
     gmodel = GradSampleModule(base_model)
 
@@ -267,16 +266,16 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     tl_params = [p for n, p in gmodel.named_parameters() if 'transform_layer' in n and p.requires_grad]
 
     if args_optimizer == 'adam':
-        base_opt = optim.Adam(dp_params, lr=lr, weight_decay=args.reg)
+        dp_optimizer = optim.Adam(dp_params, lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'amsgrad':
-        base_opt = optim.Adam(
+        dp_optimizer = optim.Adam(
             dp_params,
             lr=lr,
             weight_decay=args.reg,
             amsgrad=True,
         )
     elif args_optimizer == 'sgd':
-        base_opt = optim.SGD(
+        dp_optimizer = optim.SGD(
             dp_params,
             lr=lr,
             momentum=0.9,
@@ -285,11 +284,12 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     noise_mult = getattr(args, 'dp_noise', 0.0) if getattr(args, 'use_dp', 0) else 0.0
     clip = getattr(args, 'dp_clip', 1.0)
-    dp_optimizer = DPOptimizer(
-        base_opt,
+    privacy_engine = PrivacyEngine(accountant=RDPAccountant())
+    gmodel, dp_optimizer = privacy_engine.make_private_with_noise(
+        module=gmodel,
+        optimizer=dp_optimizer,
         noise_multiplier=noise_mult,
         max_grad_norm=clip,
-        expected_batch_size=1,
     )
     tl_optimizer = None
     if tl_params:
@@ -523,11 +523,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 dp_optimizer.step()
                 if tl_optimizer is not None:
                     tl_optimizer.step()
-                if accountant is not None:
-                    accountant.step(
-                        noise_multiplier=args.dp_noise,
-                        sample_rate=total_batch / client_sample_size,
-                    )
+                epsilon = privacy_engine.accountant.get_epsilon(args.dp_delta)
+                if args.print_eps:
+                    print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
+                    logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
                 ############################
 
                 X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
@@ -666,7 +665,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     return  np.mean(accs)
 
 
-def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', accountant=None, test_only=False, test_only_k=0):
+def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
     avg_acc = 0.0
     acc_list = []
     max_value_all_clients=[]
@@ -698,11 +697,11 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
         if test_only==False:
             testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
-                                        device=device, accountant=accountant, test_only=False)
+                                        device=device, test_only=False)
         else:
             #np.random.seed(1)
             testacc, max_values, indices=train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
-                                        device=device, accountant=accountant, test_only=True, test_only_k=test_only_k)
+                                        device=device, test_only=True, test_only_k=test_only_k)
             max_value_all_clients.append(max_values)
             indices_all_clients.append(indices)
             #np.random.seed(int(time.time()))
@@ -829,9 +828,7 @@ if __name__ == '__main__':
     K=args.K
     Q=args.Q
 
-    accountant = None
-    if args.use_dp:
-        accountant = RDPAccountant()
+    # Privacy accounting is handled by Opacus' PrivacyEngine.
 
     support_labels=torch.zeros(N*K,dtype=torch.long)
     for i in range(N):
@@ -906,7 +903,7 @@ if __name__ == '__main__':
                     net.load_state_dict(net_para)
 
             for k in [1,5]:
-                global_acc, max_value_all_clients, indices_all_clients=local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, accountant=accountant, test_only=True, test_only_k=k)
+                global_acc, max_value_all_clients, indices_all_clients=local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, test_only=True, test_only_k=k)
                 global_acc = max(global_acc)
                 if k==1:
                     if global_acc > best_acc:
@@ -922,7 +919,7 @@ if __name__ == '__main__':
                         '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
 
 
-            local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, accountant=accountant)
+            local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
 
             total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
             fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
@@ -961,7 +958,3 @@ if __name__ == '__main__':
             if global_acc > best_acc:
                 torch.save(global_model.state_dict(), args.modeldir+'fedavg/'+'globalmodel'+args.log_file_name+'.pth')
                 torch.save(nets[0].state_dict(), args.modeldir+'fedavg/'+'localmodel0'+args.log_file_name+'.pth')
-            if accountant is not None and args.print_eps:
-                eps = accountant.get_epsilon(delta=args.dp_delta)
-                print('Current epsilon {:.4f}, delta {:.1e}'.format(eps, args.dp_delta))
-                logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(eps, args.dp_delta))
