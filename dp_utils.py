@@ -2,6 +2,22 @@ import math
 import torch
 
 
+def remove_dp_hooks(model):
+    """Remove differential privacy hooks and cached gradients.
+
+    This helper cleans up any Opacus hooks attached to ``model`` and deletes
+    gradient sample attributes that may have been added during private
+    training. It is safe to call multiple times.
+    """
+    if hasattr(model, 'autograd_grad_sample_hooks'):
+        for h in model.autograd_grad_sample_hooks.values():
+            h.remove()
+        model.autograd_grad_sample_hooks = {}
+    for p in model.parameters():
+        for attr in ('grad_sample', 'grad_sample_stack'):
+            if hasattr(p, attr):
+                delattr(p, attr)
+
 def compute_noisy_delta(global_params, local_params, clip_norm, noise_mult):
     """Compute clipped and noised updates for differential privacy.
 
