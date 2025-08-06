@@ -6,9 +6,14 @@ import torchvision.models as models
 from resnetcifar import ResNet18_cifar10, ResNet50_cifar10
 from torch.distributions import Bernoulli
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from torchtext.vocab import GloVe
+try:
+    from torchtext.vocab import GloVe
+except Exception:  # pragma: no cover - optional dependency
+    GloVe = None
 from embedding.meta import RNN
 from embedding.auxiliary.factory import get_embedding
+from bn_utils import convert_batchnorm_modules
+from opacus.validators import ModuleValidator
 
 
 def l2_normalize(x):
@@ -213,7 +218,9 @@ class ResNet(nn.Module):
 def resnet12(keep_prob=1.0, avg_pool=False, drop_rate=0.0,**kwargs):
     """Constructs a ResNet-12 model.
     """
-    model = ResNet(BasicBlock, keep_prob=keep_prob, avg_pool=avg_pool,drop_rate=drop_rate, **kwargs)
+    model = ResNet(BasicBlock, keep_prob=keep_prob, avg_pool=avg_pool, drop_rate=drop_rate, **kwargs)
+    model = convert_batchnorm_modules(model)
+    ModuleValidator.validate(model, strict=True)
     return model
 
 
