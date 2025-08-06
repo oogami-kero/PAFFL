@@ -18,6 +18,8 @@ from PIL import Image
 from model import *
 from utils import *
 from dp_utils import compute_noisy_delta, compute_epsilon
+from opacus import GradSampleModule
+from opacus.optimizers import DPOptimizer
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -255,28 +257,46 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_train_client,y_train_client, X_test, y_test,
                                         device='cpu', test_only=False,test_only_k=0):
 
-    
+
+    if not isinstance(net.shared, GradSampleModule):
+        net.shared = GradSampleModule(net.shared)
+
     if args_optimizer == 'adam':
-        optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=args.reg)
+        base_opt = optim.Adam(net.shared.parameters(), lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'amsgrad':
-        optimizer = optim.Adam(
-            filter(lambda p: p.requires_grad, net.parameters()),
+        base_opt = optim.Adam(
+            filter(lambda p: p.requires_grad, net.shared.parameters()),
             lr=lr,
             weight_decay=args.reg,
             amsgrad=True,
         )
     elif args_optimizer == 'sgd':
-        optimizer = optim.SGD(
-            filter(lambda p: p.requires_grad, net.parameters()),
+        base_opt = optim.SGD(
+            filter(lambda p: p.requires_grad, net.shared.parameters()),
             lr=lr,
             momentum=0.9,
             weight_decay=args.reg,
         )
+    dp_optimizer = DPOptimizer(
+        base_opt,
+        noise_multiplier=args.noise_multiplier,
+        max_grad_norm=args.clip_norm,
+    )
+
+    transform_params = list(net.transform_layer.parameters())
+    optimizer_transform = (
+        optim.SGD(transform_params, lr=lr, momentum=0.9, weight_decay=args.reg)
+        if transform_params
+        else None
+    )
+    optimizer_few = optim.SGD(
+        net.few_classify.parameters(), lr=lr, momentum=0.9, weight_decay=args.reg
+    )
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
 
     def train_epoch(epoch, mode='train'):
-        nonlocal optimizer
+        nonlocal dp_optimizer, optimizer_transform, optimizer_few
 
         if mode == 'train':
 
@@ -301,7 +321,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 K = 5#args.K
                 Q = args.Q
             net.train()
-            optimizer.zero_grad()
+            dp_optimizer.zero_grad()
+            if optimizer_transform:
+                optimizer_transform.zero_grad()
+            optimizer_few.zero_grad()
             if args.dataset == 'FC100':
                 #X_transform = transform_train(normalize=normalize_fc100, crop_size=32, padding=4)
                 X_transform=    transforms.Compose([
@@ -490,29 +513,14 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     loss_all += contras_loss / Q *0.1
                 loss_all += loss_ce(out_all, y_total)
                 loss_all.backward()
-                optimizer.step()
+                dp_optimizer.step()
+                if optimizer_transform:
+                    optimizer_transform.step()
+                optimizer_few.step()
                 ############################
 
                 X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-                ###################################
-                # few_classify update
-                net_para_ori=net.state_dict()
-                param_require_grad={}
-                for key, param in net_new.named_parameters():
-                    if key=='few_classify.weight' or key=='few_classify.bias' or 'transformer' in key:
-                    #if key != 'module.all_classify.weight' and key != 'module.all_classify.bias':
-                        param_require_grad[key]=param
-
-                #meta-update few-classifier on query
-                loss = loss_ce(out, query_labels)
-                out_sup_on_N_class = out_all[N * K:, transformed_class_list]
-                loss += loss_ce(out,out_sup_on_N_class)*0
-                grad = torch.autograd.grad(loss, param_require_grad.values())
-                for key, grad_ in zip(param_require_grad.keys(), grad):
-                    net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
-                net.load_state_dict(net_para_ori)
-                ##################################
-                del net_new,X_out_query, out
+                del net_new, X_out_query, out
 
             if np.random.rand() < 0.005:
                 print('loss: {:.4f}'.format(loss_all.item()))
