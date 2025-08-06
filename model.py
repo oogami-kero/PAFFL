@@ -916,7 +916,12 @@ class ModelFed_Adp(nn.Module):
         self.all_classify = nn.Linear(out_dim, total_classes)
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4)
-        self.transformer= nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
+        transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
+        if getattr(args, 'use_dp', 0):
+            self.transformer = ModuleValidator.fix(transformer)
+            ModuleValidator.validate(self.transformer, strict=True)
+        else:
+            self.transformer = transformer
 
         print(self.state_dict().keys())
 
@@ -1034,7 +1039,12 @@ class LSTMAtt(nn.Module):
         self.all_classify = nn.Linear(out_dim, total_classes)
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.ebd_dim, nhead=4, batch_first=True)
-        self.transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
+        transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
+        if getattr(args, 'use_dp', 0):
+            self.transformer = ModuleValidator.fix(transformer)
+            ModuleValidator.validate(self.transformer, strict=True)
+        else:
+            self.transformer = transformer
 
 
 
