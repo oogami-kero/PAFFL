@@ -256,6 +256,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     base_model = net
     gmodel = base_model
 
+    client_sample_size = len(y_train_client)
+
     dp_params = [p for n, p in base_model.named_parameters() if 'transform_layer' not in n and p.requires_grad]
     tl_params = [p for n, p in base_model.named_parameters() if 'transform_layer' in n and p.requires_grad]
 
@@ -275,6 +277,29 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             momentum=0.9,
             weight_decay=args.reg,
         )
+
+    if args.dataset == 'fewrel':
+        N = args.N * 4
+        K = 2
+        Q = 2
+    elif args.dataset == 'huffpost':
+        N = args.N
+        K = 5
+        Q = args.Q
+    elif args.dataset == 'FC100':
+        N = args.N * 4
+        K = 2
+        Q = 2
+    elif args.dataset == 'miniImageNet':
+        N = args.N * 4
+        K = 2
+        Q = 2
+    else:
+        N = args.N
+        K = 5
+        Q = args.Q
+    total_batch = N * K + N * Q
+    sample_rate = total_batch / client_sample_size
 
     privacy_engine = None
     if args.use_dp:
