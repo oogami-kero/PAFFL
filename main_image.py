@@ -19,6 +19,7 @@ from model import *
 from model import WordEmbed
 from utils import *
 from opacus.accountants import RDPAccountant
+from opacus.optimizers import DPOptimizer
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -266,28 +267,38 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     #logger.info('n_training: %d' % X_train_client.shape[0])
     #logger.info('n_test: %d' % X_test.shape[0])
     
+    dp_params = [p for n, p in net.named_parameters() if 'transform_layer' not in n and p.requires_grad]
+    tl_params = [p for n, p in net.named_parameters() if 'transform_layer' in n and p.requires_grad]
+
     if args_optimizer == 'adam':
-        optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=args.reg)
+        base_opt = optim.Adam(dp_params, lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'amsgrad':
-        optimizer = optim.Adam(
-            filter(lambda p: p.requires_grad, net.parameters()),
+        base_opt = optim.Adam(
+            dp_params,
             lr=lr,
             weight_decay=args.reg,
             amsgrad=True,
         )
     elif args_optimizer == 'sgd':
-        optimizer = optim.SGD(
-            filter(lambda p: p.requires_grad, net.parameters()),
+        base_opt = optim.SGD(
+            dp_params,
             lr=lr,
             momentum=0.9,
             weight_decay=args.reg,
         )
+
+    noise_mult = getattr(args, 'dp_noise', 0.0) if getattr(args, 'use_dp', 0) else 0.0
+    clip = getattr(args, 'dp_clip', 1.0)
+    dp_optimizer = DPOptimizer(base_opt, noise_multiplier=noise_mult, max_grad_norm=clip)
+    tl_optimizer = None
+    if tl_params:
+        tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
     client_sample_size = X_train_client.shape[0]
 
     def train_epoch(epoch, mode='train'):
-        nonlocal optimizer
+        nonlocal dp_optimizer, tl_optimizer
 
         if mode == 'train':
 
@@ -312,7 +323,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 K = 5#args.K
                 Q = args.Q
             net.train()
-            optimizer.zero_grad()
+            dp_optimizer.zero_grad()
+            if tl_optimizer is not None:
+                tl_optimizer.zero_grad()
             if args.dataset == 'FC100':
                 #X_transform = transform_train(normalize=normalize_fc100, crop_size=32, padding=4)
                 X_transform=    transforms.Compose([
@@ -529,13 +542,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     loss_all += contras_loss / Q * 0.1
                 loss_all += loss_ce(out_all, y_total)
                 loss_all.backward()
-                if args.use_dp:
-                    torch.nn.utils.clip_grad_norm_(net.parameters(), args.dp_clip)
-                    for p in net.parameters():
-                        if p.grad is not None:
-                            noise = torch.randn_like(p.grad) * args.dp_noise * args.dp_clip / total_batch
-                            p.grad.add_(noise)
-                optimizer.step()
+                dp_optimizer.step()
+                if tl_optimizer is not None:
+                    tl_optimizer.step()
                 if accountant is not None:
                     accountant.step(
                         noise_multiplier=args.dp_noise,
