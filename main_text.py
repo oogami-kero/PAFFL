@@ -286,13 +286,13 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             optimizer=dp_optimizer,
             noise_multiplier=noise_mult,
             max_grad_norm=clip,
+            sample_rate=sample_rate,
         )
     tl_optimizer = None
     if tl_params:
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
-    client_sample_size = X_train_client.shape[0]
 
     def train_epoch(epoch, mode='train'):
         nonlocal dp_optimizer, tl_optimizer, gmodel, base_model
