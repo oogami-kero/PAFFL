@@ -3,6 +3,7 @@ import json
 import torch
 import torch.optim as optim
 import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 import argparse
 import logging
 import os
@@ -306,13 +307,20 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         noise_mult = getattr(args, 'dp_noise', 0.0)
         clip = getattr(args, 'dp_clip', 1.0)
         privacy_engine = PrivacyEngine(accountant='rdp')
-        gmodel, dp_optimizer = privacy_engine.make_private(
+        dummy_loader = DataLoader(
+            TensorDataset(torch.zeros(client_sample_size, 1)),
+            batch_size=total_batch,
+            shuffle=True,
+        )
+        gmodel, dp_optimizer, _ = privacy_engine.make_private(
             module=base_model,
             optimizer=dp_optimizer,
+            data_loader=dummy_loader,
             noise_multiplier=noise_mult,
             max_grad_norm=clip,
-            sample_rate=sample_rate,
         )
+        dp_optimizer.sample_rate = sample_rate
+        dp_optimizer.expected_batch_size = total_batch
     tl_optimizer = None
     if tl_params:
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
@@ -668,14 +676,14 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             indices.append(index)
             del acc, max_value, index
         if privacy_engine is not None:
-            gmodel, dp_optimizer, *_ = privacy_engine.detach()
+            gmodel, dp_optimizer, _ = privacy_engine.detach()
         return np.mean(accs), torch.cat(max_values,0), torch.cat(indices,0)
 
     if np.random.rand()<0.3:
         print("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
     #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
     if privacy_engine is not None:
-        gmodel, dp_optimizer, *_ = privacy_engine.detach()
+        gmodel, dp_optimizer, _ = privacy_engine.detach()
     return  np.mean(accs)
 
 
