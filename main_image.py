@@ -18,7 +18,6 @@ from PIL import Image
 from model import *
 from model import WordEmbed
 from utils import *
-from opacus.accountants import RDPAccountant
 from opacus import GradSampleModule, PrivacyEngine
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
@@ -284,7 +283,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     noise_mult = getattr(args, 'dp_noise', 0.0) if getattr(args, 'use_dp', 0) else 0.0
     clip = getattr(args, 'dp_clip', 1.0)
-    privacy_engine = PrivacyEngine(accountant=RDPAccountant())
+    privacy_engine = PrivacyEngine(accountant='rdp')
     gmodel, dp_optimizer = privacy_engine.make_private_with_noise(
         module=gmodel,
         optimizer=dp_optimizer,
