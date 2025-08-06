@@ -106,18 +106,38 @@ def conv3x3(in_planes, out_planes, stride=1):
                      padding=1, bias=False)
 
 
+class GroupOrLayerNorm(nn.Module):
+    """Normalization layer that falls back to LayerNorm when group division fails."""
+
+    def __init__(self, planes: int):
+        super().__init__()
+        num_groups = min(32, planes)
+        if planes % num_groups == 0:
+            self.use_group = True
+            self.norm = nn.GroupNorm(num_groups=num_groups, num_channels=planes)
+        else:
+            self.use_group = False
+            self.norm = nn.LayerNorm(planes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.use_group:
+            return self.norm(x)
+        # LayerNorm expects the channel dimension last
+        return self.norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+
+
 class BasicBlock(nn.Module):
     expansion = 1
 
     def __init__(self, inplanes, planes, stride=1, downsample=None, drop_rate=0.0, drop_block=False, block_size=1):
         super(BasicBlock, self).__init__()
         self.conv1 = conv3x3(inplanes, planes)
-        self.bn1 = nn.BatchNorm2d(planes)
+        self.bn1 = GroupOrLayerNorm(planes)
         self.relu = nn.LeakyReLU(0.1)
         self.conv2 = conv3x3(planes, planes)
-        self.bn2 = nn.BatchNorm2d(planes)
+        self.bn2 = GroupOrLayerNorm(planes)
         self.conv3 = conv3x3(planes, planes)
-        self.bn3 = nn.BatchNorm2d(planes)
+        self.bn3 = GroupOrLayerNorm(planes)
         self.maxpool = nn.MaxPool2d(stride)
         self.downsample = downsample
         self.stride = stride
@@ -184,7 +204,7 @@ class ResNet(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
-            elif isinstance(m, nn.BatchNorm2d):
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm, nn.LayerNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
@@ -194,7 +214,7 @@ class ResNet(nn.Module):
             downsample = nn.Sequential(
                 nn.Conv2d(self.inplanes, planes * block.expansion,
                           kernel_size=1, stride=1, bias=False),
-                nn.BatchNorm2d(planes * block.expansion),
+                GroupOrLayerNorm(planes * block.expansion),
             )
 
         layers = []
