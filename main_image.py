@@ -490,6 +490,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 net_new = GradSampleModule(copy.deepcopy(base_model))
 
                 for j in range(args.fine_tune_steps):
+                    net_new.zero_grad()
                     X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
                     losses = F.cross_entropy(out, support_labels, reduction='none')
 
@@ -500,28 +501,19 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             if param.requires_grad:
                                 param_require_grad[key] = param
 
+                    losses.mean().backward()
+                    dp_params = list(param_require_grad.values())
+
                     if args.use_dp:
-                        per_sample_grads = []
-                        for i in range(losses.size(0)):
-                            grad_i = torch.autograd.grad(losses[i], param_require_grad.values(), retain_graph=True, allow_unused=True)
-                            per_sample_grads.append(grad_i)
-                        per_param_grads = []
-                        params_list = list(param_require_grad.values())
-                        for idx in range(len(params_list)):
-                            grads = []
-                            for g in per_sample_grads:
-                                grads.append(g[idx] if g[idx] is not None else torch.zeros_like(params_list[idx]))
-                            per_param_grads.append(torch.stack(grads))
+                        per_param_grads = [p.grad_sample for p in dp_params]
                         dp_grads = dp_clip_and_noise(per_param_grads, args.dp_clip, args.dp_noise)
                         for key, grad_ in zip(param_require_grad.keys(), dp_grads):
                             net_para[key] = net_para[key] - args.fine_tune_lr * grad_
                     else:
-                        loss = losses.mean()
-                        grad = torch.autograd.grad(loss, param_require_grad.values(), allow_unused=True)
-                        for key, grad_ in zip(param_require_grad.keys(), grad):
-                            if grad_ is None:
+                        for key, param in param_require_grad.items():
+                            if param.grad is None:
                                 continue
-                            net_para[key] = net_para[key] - args.fine_tune_lr * grad_
+                            net_para[key] = net_para[key] - args.fine_tune_lr * param.grad
                     # net_para = list(
                     #                map(lambda p: p[1] - fine_tune_lr * p[0], zip(grad, net_para)))
                     # net_para={key:value for key, value in zip(net.state_dict().keys(),net.state_dict().values())}
@@ -571,26 +563,19 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 out_sup_on_N_class/=out_sup_on_N_class.sum(-1,keepdim=True)
                 aux_loss = F.cross_entropy(out, out_sup_on_N_class.detach(), reduction='none') * 0.1
                 losses = losses + aux_loss
+                net_new.zero_grad()
+                losses.mean().backward()
+                dp_params = list(param_require_grad.values())
                 if args.use_dp:
-                    per_sample_grads = []
-                    for i in range(losses.size(0)):
-                        grad_i = torch.autograd.grad(losses[i], param_require_grad.values(), retain_graph=True, allow_unused=True)
-                        per_sample_grads.append(grad_i)
-                    per_param_grads = []
-                    params_list = list(param_require_grad.values())
-                    for idx in range(len(params_list)):
-                        grads = []
-                        for g in per_sample_grads:
-                            grads.append(g[idx] if g[idx] is not None else torch.zeros_like(params_list[idx]))
-                        per_param_grads.append(torch.stack(grads))
+                    per_param_grads = [p.grad_sample for p in dp_params]
                     dp_grads = dp_clip_and_noise(per_param_grads, args.dp_clip, args.dp_noise)
                     for key, grad_ in zip(param_require_grad.keys(), dp_grads):
                         net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
                 else:
-                    loss = losses.mean()
-                    grad = torch.autograd.grad(loss, param_require_grad.values())
-                    for key, grad_ in zip(param_require_grad.keys(), grad):
-                        net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
+                    for key, param in param_require_grad.items():
+                        if param.grad is None:
+                            continue
+                        net_para_ori[key]=net_para_ori[key]-args.meta_lr*param.grad
                 gmodel.load_state_dict(net_para_ori)
                 if accountant is not None:
                     accountant.step(
