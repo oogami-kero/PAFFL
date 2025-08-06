@@ -27,11 +27,11 @@ def remove_dp_hooks(model):
 
     for submodule in model.modules():
         hooks = getattr(submodule, 'autograd_grad_sample_hooks', None)
-        if hooks:
+        if hooks is not None:
             iterable = hooks.values() if isinstance(hooks, dict) else hooks
             for h in iterable:
                 h.remove()
-            submodule.autograd_grad_sample_hooks = [] if isinstance(hooks, list) else {}
+            delattr(submodule, 'autograd_grad_sample_hooks')
         for p in submodule.parameters(recurse=False):
             for attr in ('grad_sample', 'grad_sample_stack'):
                 if hasattr(p, attr):
