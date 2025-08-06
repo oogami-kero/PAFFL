@@ -621,12 +621,13 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     net_new.zero_grad()
                     losses.mean().backward()
                     with torch.no_grad():
-                        gmodel_params = dict(gmodel.named_parameters())
+                        gmodel_base = gmodel._module if hasattr(gmodel, '_module') else gmodel
+                        gmodel_params = dict(gmodel_base.named_parameters())
                         for name, param in params_to_update:
                             if param.grad is None:
                                 continue
                             gmodel_params[name].data.add_(-args.meta_lr * param.grad)
-                    base_model.load_state_dict(gmodel.state_dict())
+                    base_model.load_state_dict(gmodel_base.state_dict())
                     ##################################
                     del net_new, X_out_query, out
     
