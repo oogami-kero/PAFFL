@@ -268,7 +268,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     dp_params = [
         p for n, p in base_model.named_parameters()
-        if 'transform_layer' not in n and 'few_classify' not in n and p.requires_grad
+        if 'transform_layer' not in n and 'few_classify' not in n and 'transformer' not in n and p.requires_grad
     ]
     head_params = list(base_model.few_classify.parameters())
     tl_params = [p for n, p in base_model.named_parameters() if 'transform_layer' in n and p.requires_grad]
@@ -329,7 +329,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     sample_rate = total_batch / client_sample_size
 
     privacy_engine = None
-    if args.use_dp:
+    if args.use_dp and dp_params:
         base_model = remove_dp_hooks(base_model)
         noise_mult = getattr(args, 'dp_noise', 0.0)
         clip = getattr(args, 'dp_clip', 1.0)
@@ -538,9 +538,15 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             if mode == 'train':
                 loss_all=0
                 # all_classify update
+                for name, param in gmodel.named_parameters():
+                    if 'transformer' in name:
+                        param.requires_grad_(False)
                 X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-                out_sup=X_out_all[:N*K].reshape([N,K,-1]).transpose(0,1)
-                out_query=X_out_all[N*K:].reshape([N,Q,-1]).transpose(0,1)
+                for name, param in gmodel.named_parameters():
+                    if 'transformer' in name:
+                        param.requires_grad_(True)
+                out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
+                out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
     
     
     
@@ -592,7 +598,13 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
                     ############################
     
+                    for name, param in gmodel.named_parameters():
+                        if 'transformer' in name:
+                            param.requires_grad_(False)
                     X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+                    for name, param in gmodel.named_parameters():
+                        if 'transformer' in name:
+                            param.requires_grad_(True)
                     ###################################
                     # few_classify update
                     params_to_update = []
