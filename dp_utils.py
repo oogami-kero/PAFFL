@@ -9,10 +9,15 @@ def remove_dp_hooks(model):
     gradient sample attributes that may have been added during private
     training. It is safe to call multiple times.
     """
-    if hasattr(model, 'autograd_grad_sample_hooks'):
-        for h in model.autograd_grad_sample_hooks.values():
+    hooks = getattr(model, 'autograd_grad_sample_hooks', None)
+    if hooks:
+        if isinstance(hooks, dict):
+            iterable = hooks.values()
+        else:
+            iterable = hooks
+        for h in iterable:
             h.remove()
-        model.autograd_grad_sample_hooks = {}
+        model.autograd_grad_sample_hooks = [] if isinstance(hooks, list) else {}
     for p in model.parameters():
         for attr in ('grad_sample', 'grad_sample_stack'):
             if hasattr(p, attr):
