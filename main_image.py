@@ -369,7 +369,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         support_batch = N * K
         query_batch = N * Q
         total_batch = support_batch + query_batch
-        dp_optimizer.expected_batch_size = total_batch
+        sample_rate = total_batch / client_sample_size
+        if args.use_dp:
+            dp_optimizer.expected_batch_size = total_batch
+            dp_optimizer.sample_rate = sample_rate
 
         support_labels = torch.zeros(N * K, dtype=torch.long)
         for i in range(N):
