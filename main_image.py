@@ -487,7 +487,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
 
             if args.fine_tune_steps>0:
-                net_new = GradSampleModule(copy.deepcopy(base_model))
+                net_new = copy.deepcopy(base_model)
 
                 for j in range(args.fine_tune_steps):
                     net_new.zero_grad()
@@ -502,27 +502,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                                 param_require_grad[key] = param
 
                     losses.mean().backward()
-                    dp_params = list(param_require_grad.values())
-
-                    if args.use_dp:
-                        per_param_grads = [p.grad_sample for p in dp_params]
-                        dp_grads = dp_clip_and_noise(per_param_grads, args.dp_clip, args.dp_noise)
-                        for key, grad_ in zip(param_require_grad.keys(), dp_grads):
-                            net_para[key] = net_para[key] - args.fine_tune_lr * grad_
-                    else:
-                        for key, param in param_require_grad.items():
-                            if param.grad is None:
-                                continue
-                            net_para[key] = net_para[key] - args.fine_tune_lr * param.grad
-                    # net_para = list(
-                    #                map(lambda p: p[1] - fine_tune_lr * p[0], zip(grad, net_para)))
-                    # net_para={key:value for key, value in zip(net.state_dict().keys(),net.state_dict().values())}
+                    for key, param in param_require_grad.items():
+                        if param.grad is None:
+                            continue
+                        net_para[key] = net_para[key] - args.fine_tune_lr * param.grad
                     net_new.load_state_dict(net_para)
-                    if accountant is not None:
-                        accountant.step(
-                            noise_multiplier=args.dp_noise,
-                            sample_rate=support_batch / client_sample_size,
-                        )
 
                 X_out_query, _, out = net_new(X_total_query)
                 X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
@@ -565,23 +549,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 losses = losses + aux_loss
                 net_new.zero_grad()
                 losses.mean().backward()
-                dp_params = list(param_require_grad.values())
-                if args.use_dp:
-                    per_param_grads = [p.grad_sample for p in dp_params]
-                    dp_grads = dp_clip_and_noise(per_param_grads, args.dp_clip, args.dp_noise)
-                    for key, grad_ in zip(param_require_grad.keys(), dp_grads):
-                        net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
-                else:
-                    for key, param in param_require_grad.items():
-                        if param.grad is None:
-                            continue
-                        net_para_ori[key]=net_para_ori[key]-args.meta_lr*param.grad
+                for key, param in param_require_grad.items():
+                    if param.grad is None:
+                        continue
+                    net_para_ori[key]=net_para_ori[key]-args.meta_lr*param.grad
                 gmodel.load_state_dict(net_para_ori)
-                if accountant is not None:
-                    accountant.step(
-                        noise_multiplier=args.dp_noise,
-                        sample_rate=query_batch / client_sample_size,
-                    )
                 base_model.load_state_dict(gmodel.state_dict())
                 ##################################
                 del net_new,X_out_query, out

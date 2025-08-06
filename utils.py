@@ -452,32 +452,3 @@ def get_dataloader(dataset, datadir, train_bs, test_bs, dataidxs=None, noise_lev
         test_dl = data.DataLoader(dataset=test_ds, batch_size=test_bs, shuffle=False)
 
     return train_dl, test_dl, train_ds, test_ds
-from torch.nn.utils import clip_grad_norm_
-
-def dp_clip_and_noise(per_sample_grads, dp_clip, noise_multiplier):
-    """Clip per-sample gradients and add Gaussian noise.
-
-    Args:
-        per_sample_grads (List[Tensor]): List of gradients for each parameter with
-            shape [batch_size, *param_shape].
-        dp_clip (float): Clipping norm.
-        noise_multiplier (float): Multiplier for noise added after clipping.
-
-    Returns:
-        List[Tensor]: Noisy, clipped gradients averaged over the batch.
-    """
-    batch_size = per_sample_grads[0].size(0)
-    clipped = []
-    for i in range(batch_size):
-        params = [torch.nn.Parameter(torch.zeros_like(g[i])) for g in per_sample_grads]
-        for p, g in zip(params, per_sample_grads):
-            p.grad = g[i].clone()
-        clip_grad_norm_(params, dp_clip)
-        clipped.append([p.grad.clone() for p in params])
-    processed = []
-    for param_idx in range(len(per_sample_grads)):
-        stacked = torch.stack([clipped[s][param_idx] for s in range(batch_size)], dim=0)
-        mean_grad = stacked.mean(dim=0)
-        noise = torch.randn_like(mean_grad) * noise_multiplier * dp_clip / batch_size
-        processed.append(mean_grad + noise)
-    return processed
