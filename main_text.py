@@ -18,7 +18,7 @@ from PIL import Image
 from model import *
 from model import WordEmbed
 from utils import *
-from opacus import GradSampleModule, PrivacyEngine
+from opacus import PrivacyEngine
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -255,11 +255,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     base_model = net
     gmodel = base_model
-    if args.use_dp:
-        gmodel = GradSampleModule(base_model)
 
-    dp_params = [p for n, p in gmodel.named_parameters() if 'transform_layer' not in n and p.requires_grad]
-    tl_params = [p for n, p in gmodel.named_parameters() if 'transform_layer' in n and p.requires_grad]
+    dp_params = [p for n, p in base_model.named_parameters() if 'transform_layer' not in n and p.requires_grad]
+    tl_params = [p for n, p in base_model.named_parameters() if 'transform_layer' in n and p.requires_grad]
 
     if args_optimizer == 'adam':
         dp_optimizer = optim.Adam(dp_params, lr=lr, weight_decay=args.reg)
@@ -283,8 +281,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         noise_mult = getattr(args, 'dp_noise', 0.0)
         clip = getattr(args, 'dp_clip', 1.0)
         privacy_engine = PrivacyEngine(accountant='rdp')
-        gmodel, dp_optimizer = privacy_engine.make_private_with_noise(
-            module=gmodel,
+        gmodel, dp_optimizer = privacy_engine.make_private(
+            module=base_model,
             optimizer=dp_optimizer,
             noise_multiplier=noise_mult,
             max_grad_norm=clip,
