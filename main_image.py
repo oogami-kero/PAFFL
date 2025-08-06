@@ -266,11 +266,16 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     client_sample_size = len(y_train_client)
 
-    dp_params = [p for n, p in base_model.named_parameters() if 'transform_layer' not in n and p.requires_grad]
+    dp_params = [
+        p for n, p in base_model.named_parameters()
+        if 'transform_layer' not in n and 'few_classify' not in n and p.requires_grad
+    ]
+    head_params = list(base_model.few_classify.parameters())
     tl_params = [p for n, p in base_model.named_parameters() if 'transform_layer' in n and p.requires_grad]
 
     if args_optimizer == 'adam':
         dp_optimizer = optim.Adam(dp_params, lr=lr, weight_decay=args.reg)
+        head_optimizer = optim.Adam(head_params, lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'amsgrad':
         dp_optimizer = optim.Adam(
             dp_params,
@@ -278,9 +283,21 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             weight_decay=args.reg,
             amsgrad=True,
         )
+        head_optimizer = optim.Adam(
+            head_params,
+            lr=lr,
+            weight_decay=args.reg,
+            amsgrad=True,
+        )
     elif args_optimizer == 'sgd':
         dp_optimizer = optim.SGD(
             dp_params,
+            lr=lr,
+            momentum=0.9,
+            weight_decay=args.reg,
+        )
+        head_optimizer = optim.SGD(
+            head_params,
             lr=lr,
             momentum=0.9,
             weight_decay=args.reg,
@@ -340,7 +357,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     try:
 
         def train_epoch(epoch, mode='train'):
-            nonlocal dp_optimizer, tl_optimizer, gmodel, base_model
+            nonlocal dp_optimizer, head_optimizer, tl_optimizer, gmodel, base_model
     
             if mode == 'train':
     
@@ -366,6 +383,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     Q = args.Q
                 gmodel.train()
                 dp_optimizer.zero_grad()
+                head_optimizer.zero_grad()
                 if tl_optimizer is not None:
                     tl_optimizer.zero_grad()
                 if args.dataset == 'FC100':
@@ -564,6 +582,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     loss_all += loss_ce(out_all, y_total)
                     loss_all.backward()
                     dp_optimizer.step()
+                    head_optimizer.step()
                     if tl_optimizer is not None:
                         tl_optimizer.step()
                     if args.use_dp and privacy_engine is not None:
