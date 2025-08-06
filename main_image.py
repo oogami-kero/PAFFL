@@ -20,6 +20,7 @@ from model import *
 from model import WordEmbed
 from utils import *
 from opacus import PrivacyEngine
+from dp_utils import remove_dp_hooks
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -312,6 +313,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     privacy_engine = None
     if args.use_dp:
+        remove_dp_hooks(base_model)
         noise_mult = getattr(args, 'dp_noise', 0.0)
         clip = getattr(args, 'dp_clip', 1.0)
         privacy_engine = PrivacyEngine(accountant='rdp')
@@ -711,14 +713,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 privacy_engine = None
                 gmodel.train()
             else:
-                for p in gmodel.parameters():
-                    if hasattr(p, 'grad_sample'):
-                        del p.grad_sample
-                    if hasattr(p, 'grad_sample_stack'):
-                        del p.grad_sample_stack
                 dp_optimizer = orig_optimizer
                 gmodel = base_model
                 gmodel.train()
+            remove_dp_hooks(gmodel)
         base_model.train()
     return result
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
@@ -729,6 +727,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
     for net_id, net in nets.items():
         print(net_id)
+        remove_dp_hooks(net)
 
         #net.cuda()
 
