@@ -591,7 +591,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             param.requires_grad_(False)
                     if isinstance(gmodel, GradSampleModule):
                         gmodel.disable_hooks()
-                    X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+                    with torch.no_grad():
+                        X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
                     if isinstance(gmodel, GradSampleModule):
                         gmodel.enable_hooks()
                     for name, param in gmodel.named_parameters():
