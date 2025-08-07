@@ -555,6 +555,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     
                 if args.fine_tune_steps > 0:
                     net_new = copy.deepcopy(gmodel._module if hasattr(gmodel, '_module') else gmodel)
+                    net_new = remove_dp_hooks(net_new)
 
                     for j in range(args.fine_tune_steps):
                         net_new.zero_grad()
