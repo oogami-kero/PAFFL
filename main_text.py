@@ -378,6 +378,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     K = 5#args.K
                     Q = args.Q
                 gmodel.train()
+                gmodel.zero_grad(set_to_none=True)  # clears param.grad and param.grad_sample
                 dp_optimizer.zero_grad()
                 head_optimizer.zero_grad()
                 if tl_optimizer is not None:
