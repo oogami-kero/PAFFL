@@ -586,11 +586,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     head_optimizer.step()
                     if tl_optimizer is not None:
                         tl_optimizer.step()
-                    if args.use_dp and privacy_engine is not None:
-                        epsilon = privacy_engine.accountant.get_epsilon(args.dp_delta)
-                        if args.print_eps:
-                            print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
-                            logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
                     ############################
     
                     for name, param in gmodel.named_parameters():
@@ -730,8 +725,13 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 del acc, max_value, index
             result = (np.mean(accs), torch.cat(max_values, 0), torch.cat(indices, 0))
 
+        if args.use_dp and privacy_engine is not None and args.print_eps:
+            epsilon = privacy_engine.accountant.get_epsilon(args.dp_delta)
+            print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
+            logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
+
         if np.random.rand() < 0.3:
-            print("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
+            print('Meta-test_Accuracy: {:.4f}'.format(np.mean(accs)))
         #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
     
     
