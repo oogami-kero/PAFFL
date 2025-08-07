@@ -20,6 +20,7 @@ from model import *
 from model import WordEmbed
 from utils import *
 from opacus import PrivacyEngine
+from opacus.grad_sample import GradSampleModule
 from dp_utils import remove_dp_hooks
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
@@ -594,7 +595,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     for name, param in gmodel.named_parameters():
                         if 'transformer' in name:
                             param.requires_grad_(False)
+                    if isinstance(gmodel, GradSampleModule):
+                        gmodel.set_grad_sample_enabled(False)
                     X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+                    if isinstance(gmodel, GradSampleModule):
+                        gmodel.set_grad_sample_enabled(True)
                     for name, param in gmodel.named_parameters():
                         if 'transformer' in name:
                             param.requires_grad_(True)
