@@ -536,24 +536,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     
                 #print(out[:3])
             if mode == 'train':
-                loss_all=0
-                # all_classify update
-                for name, param in gmodel.named_parameters():
-                    if 'transformer' in name:
-                        param.requires_grad_(False)
-                X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-                for name, param in gmodel.named_parameters():
-                    if 'transformer' in name:
-                        param.requires_grad_(True)
-                out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
-                out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
-    
-    
-    
-                # _, _, out_all = net(X_total_sup, all_classify=True)
-    
-    
-    
+                loss_all = 0
                 if args.fine_tune_steps > 0:
                     gmodel_base = gmodel._module if hasattr(gmodel, '_module') else gmodel
                     net_new = copy.deepcopy(model_template)
@@ -578,12 +561,21 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     
                     X_out_query, _, out = net_new(X_total_query)
                     X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
-    
+
                     X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
+                    for name, param in gmodel.named_parameters():
+                        if 'transformer' in name:
+                            param.requires_grad_(False)
+                    X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+                    for name, param in gmodel.named_parameters():
+                        if 'transformer' in name:
+                            param.requires_grad_(True)
+                    out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
+                    out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
                     #############################
                     # Q=K here update for all-model
                     for j in range(Q):
-                        contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q],
+                        contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1) % Q],
                                                                  tau=0.5)
                         loss_all += contras_loss / Q * 0.1
                     loss_all += loss_ce(out_all, y_total)
