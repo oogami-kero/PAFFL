@@ -257,6 +257,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     base_model = net
     base_model.train()
     gmodel = base_model
+    model_template = copy.deepcopy(base_model)   # DP-free template
 
     client_sample_size = len(y_train_client)
 
@@ -324,7 +325,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     privacy_engine = None
     if args.use_dp and dp_params:
-        base_model = remove_dp_hooks(base_model)
         noise_mult = getattr(args, 'dp_noise', 0.0)
         clip = getattr(args, 'dp_clip', 1.0)
         privacy_engine = PrivacyEngine(accountant='rdp')
@@ -544,8 +544,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     args.meta_lr=0.001
                     #args.fine_tune_steps=0
                 if args.fine_tune_steps>0:
-                    net_new = copy.deepcopy(gmodel._module if hasattr(gmodel, '_module') else gmodel)
-                    net_new = remove_dp_hooks(net_new)
+                    gmodel_base = gmodel._module if hasattr(gmodel, '_module') else gmodel
+                    net_new = copy.deepcopy(model_template)
+                    net_new.load_state_dict(gmodel_base.state_dict())
 
                     for j in range(args.fine_tune_steps):
                         net_new.zero_grad()
