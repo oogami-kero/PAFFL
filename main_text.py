@@ -349,6 +349,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
     result = None
+    epsilon = None
     try:
 
         def train_epoch(epoch, mode='train'):
@@ -718,10 +719,12 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         if np.random.rand() < 0.3:
             print('Meta-test_Accuracy: {:.4f}'.format(np.mean(accs)))
         #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
-    
-    
+
+
     finally:
         if args.use_dp:
+            if hasattr(privacy_engine, 'accountant'):
+                epsilon = privacy_engine.accountant.get_epsilon(args.dp_delta)
             if hasattr(privacy_engine, 'detach'):
                 gmodel, dp_optimizer, _ = privacy_engine.detach()
                 privacy_engine = None
@@ -732,12 +735,13 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 gmodel.train()
             gmodel = remove_dp_hooks(gmodel)
         base_model.train()
-    return result
+    return result, epsilon
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
     avg_acc = 0.0
     acc_list = []
     max_value_all_clients=[]
     indices_all_clients=[]
+    epsilon = None
 
     for net_id, net in nets.items():
         print(net_id)
@@ -753,16 +757,17 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
         if test_only==False:
             net.train()
-            testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+            testacc, eps = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device=device, test_only=False)
+            epsilon = eps
         else:
-            #np.random.seed(1)
             net.train()
-            testacc, max_values, indices = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+            result, eps = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device=device, test_only=True, test_only_k=test_only_k)
+            testacc, max_values, indices = result
+            epsilon = eps
             max_value_all_clients.append(max_values)
             indices_all_clients.append(indices)
-            #np.random.seed(int(time.time()))
 
             acc_list.append(testacc)
 
@@ -771,7 +776,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
             max_value_all_clients = torch.stack(max_value_all_clients, 0)
             indices_all_clients = torch.stack(indices_all_clients, 0)
-            return acc_list, max_value_all_clients, indices_all_clients
+            return acc_list, max_value_all_clients, indices_all_clients, epsilon
 
         avg_acc += testacc
         acc_list.append(testacc)
@@ -786,14 +791,14 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     if test_only:
         max_value_all_clients=torch.stack(max_value_all_clients,0)
         indices_all_clients=torch.stack(indices_all_clients,0)
-        return acc_list, max_value_all_clients, indices_all_clients
+        return acc_list, max_value_all_clients, indices_all_clients, epsilon
 
     avg_acc /= args.n_parties
     if args.alg == 'local_training':
         logger.info("avg test acc %f" % avg_acc)
         logger.info("std acc %f" % np.std(acc_list))
 
-    return nets
+    return nets, epsilon
 
 
 if __name__ == '__main__':
@@ -959,7 +964,7 @@ if __name__ == '__main__':
                     net.load_state_dict(net_para)
 
             for k in [1,5]:
-                global_acc, max_value_all_clients, indices_all_clients=local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, test_only=True, test_only_k=k)
+                global_acc, max_value_all_clients, indices_all_clients, _ = local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, test_only=True, test_only_k=k)
                 global_acc = max(global_acc)
                 if k==1:
                     if global_acc > best_acc:
@@ -974,7 +979,7 @@ if __name__ == '__main__':
                     logger.info(
                         '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
 
-            local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+            _, epsilon = local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
 
             total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
             fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
@@ -1004,8 +1009,7 @@ if __name__ == '__main__':
 
             print('>> Current Round: {}'.format(round))
             logger.info('>> Current Round: {}'.format(round))
-            if args.use_dp and privacy_engine is not None and args.print_eps:
-                epsilon = privacy_engine.accountant.get_epsilon(args.dp_delta)
+            if args.use_dp and epsilon is not None and args.print_eps:
                 print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
                 logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
 
