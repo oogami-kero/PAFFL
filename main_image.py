@@ -330,7 +330,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     privacy_engine = None
     if args.use_dp and dp_params:
-        base_model = remove_dp_hooks(base_model)
         noise_mult = getattr(args, 'dp_noise', 0.0)
         clip = getattr(args, 'dp_clip', 1.0)
         privacy_engine = PrivacyEngine(accountant='rdp')
@@ -555,8 +554,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     
     
                 if args.fine_tune_steps > 0:
-                    net_new = copy.deepcopy(base_model)
-                    net_new = remove_dp_hooks(net_new)
+                    net_new = copy.deepcopy(gmodel._module if hasattr(gmodel, '_module') else gmodel)
 
                     for j in range(args.fine_tune_steps):
                         net_new.zero_grad()
@@ -757,7 +755,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
     for net_id, net in nets.items():
         print(net_id)
-        net = remove_dp_hooks(net)
         nets[net_id] = net
 
         #net.cuda()
