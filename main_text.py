@@ -354,6 +354,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             nonlocal dp_optimizer, head_optimizer, tl_optimizer, gmodel, base_model
     
             if mode == 'train':
+                loss_all=0
     
                 if args.dataset=='fewrel' :
                     N=args.N*4
@@ -437,6 +438,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 query_labels = query_labels.cuda()
     
             if mode == 'train':
+                loss_all=0
                 if args.dataset=='FC100':
                     class_dict = fine_split['train']
                 elif args.dataset=='miniImageNet':
@@ -528,16 +530,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     
             if mode == 'train':
                 loss_all=0
-                # all_classify update
-                for name, param in gmodel.named_parameters():
-                    if 'transformer' in name:
-                        param.requires_grad_(False)
-                X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-                for name, param in gmodel.named_parameters():
-                    if 'transformer' in name:
-                        param.requires_grad_(True)
-                out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
-                out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
     
     
                 if args.dataset=='fewrel':
@@ -569,6 +561,15 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
     
                     X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
+                    for name, param in gmodel.named_parameters():
+                        if 'transformer' in name:
+                            param.requires_grad_(False)
+                    X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+                    for name, param in gmodel.named_parameters():
+                        if 'transformer' in name:
+                            param.requires_grad_(True)
+                    out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
+                    out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
                     #############################
                     # Q=K here update for all-model
                     for j in range(Q):
