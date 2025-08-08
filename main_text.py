@@ -11,8 +11,6 @@ import copy
 import datetime
 import random
 import time
-from sklearn.linear_model import LogisticRegression
-from sklearn import metrics
 
 from PIL import Image
 
@@ -593,43 +591,24 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 if use_logistic:
                     with torch.no_grad():
                         X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0))
-                        X_out_sup=X_out_all[:N*K]
-                        X_out_query=X_out_all[N*K:]
-    
-                        support_features = l2_normalize(X_out_sup.detach().cpu()).numpy()
-                        query_features = l2_normalize(X_out_query.detach().cpu()).numpy()
-    
-                        # ---- PATCH START ---------------------------------
-                        # Replace any NaN / ±Inf that may have been produced by l2_normalize
-                        # (zero vectors occasionally sneak through and break scikit-learn).
-                        support_features = np.nan_to_num(
-                            support_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-                        query_features = np.nan_to_num(
-                            query_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-                        # ---- PATCH END -----------------------------------
-    
-                        clf = LogisticRegression(penalty='l2',
-                                                 random_state=0,
-                                                 C=1.0,
-                                                 solver='lbfgs',
-                                                 max_iter=1000,
-                                                 multi_class='multinomial')
-                        clf.fit(support_features, support_labels.detach().cpu().numpy())
-    
-                        query_ys_pred = clf.predict(query_features)
-    
-                        out=torch.tensor(clf.predict_proba(query_features)).cuda()
-    
-                        acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
-                        max_value, index=torch.max(out,-1)
-    
-                        #del net_new, X_out_sup, X_out_query, out, param_require_grad, grad
-                        if test_only:
-                            return acc_train, max_value, index
-                        else:
-                            return acc_train
-    
-                    #return metrics.accuracy_score(query_labels.detach().cpu().numpy(), query_ys_pred)
+                        X_out_sup = X_out_all[:N * K]
+                        X_out_query = X_out_all[N * K:]
+
+                    support_features = torch.nan_to_num(l2_normalize(X_out_sup), nan=0.0, posinf=0.0, neginf=0.0)
+                    query_features = torch.nan_to_num(l2_normalize(X_out_query), nan=0.0, posinf=0.0, neginf=0.0)
+
+                    clf = LogisticRegression(support_features.size(1), N).to(support_features.device)
+                    clf.fit(support_features, support_labels, max_iter=1000)
+
+                    out = clf.predict_proba(query_features)
+
+                    acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
+                    max_value, index = torch.max(out, -1)
+
+                    if test_only:
+                        return acc_train, max_value, index
+                    else:
+                        return acc_train
     
                 else:
     

@@ -22,6 +22,39 @@ def l2_normalize(x):
     return out
 
 
+class LogisticRegression(nn.Module):
+    '''Simple multi-class logistic regression classifier.'''
+
+    def __init__(self, input_dim, num_classes):
+        super().__init__()
+        self.linear = nn.Linear(input_dim, num_classes)
+
+    def forward(self, x):
+        return self.linear(x)
+
+    def fit(self, X, y, lr=1.0, max_iter=100, weight_decay=1.0):
+        '''Train the model on features ``X`` and labels ``y``.'''
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.LBFGS(self.parameters(), lr=lr, max_iter=max_iter, weight_decay=weight_decay)
+
+        def closure():
+            optimizer.zero_grad()
+            out = self.forward(X)
+            loss = criterion(out, y)
+            loss.backward()
+            return loss
+
+        optimizer.step(closure)
+
+    def predict_proba(self, X):
+        '''Return class probabilities for ``X``.'''
+        return F.softmax(self.forward(X), dim=-1)
+
+    def predict(self, X):
+        '''Return class predictions for ``X``.'''
+        return torch.argmax(self.predict_proba(X), dim=-1)
+
+
 class TransformLayer(nn.Module):
     """Per-client data transformation layer T_k(x) = alpha * x + beta."""
 
