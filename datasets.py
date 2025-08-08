@@ -69,7 +69,7 @@ class CIFAR10_truncated(data.Dataset):
             tuple: (image, target) where target is index of the target class.
         """
         img, target = self.data[index], self.target[index]
-        # img = Image.fromarray(img)
+        img = Image.fromarray(img)
         # print("cifar10 img:", img)
         # print("cifar10 target:", target)
 
