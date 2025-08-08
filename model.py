@@ -32,15 +32,24 @@ class LogisticRegression(nn.Module):
     def forward(self, x):
         return self.linear(x)
 
-    def fit(self, X, y, lr=1.0, max_iter=100, weight_decay=1.0):
-        '''Train the model on features ``X`` and labels ``y``.'''
+    def fit(self, X, y, lr=1.0, max_iter=100, l2_reg=0.0):
+        '''Train the model on features ``X`` and labels ``y``.
+
+        ``l2_reg`` controls the strength of L2 regularization added to the
+        loss. Set ``l2_reg`` to ``0`` to disable the penalty.
+        '''
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.LBFGS(self.parameters(), lr=lr, max_iter=max_iter, weight_decay=weight_decay)
+        optimizer = torch.optim.LBFGS(self.parameters(), lr=lr, max_iter=max_iter)
 
         def closure():
             optimizer.zero_grad()
             out = self.forward(X)
             loss = criterion(out, y)
+            if l2_reg > 0:
+                l2_penalty = 0
+                for p in self.parameters():
+                    l2_penalty += p.pow(2).sum()
+                loss = loss + l2_reg * l2_penalty
             loss.backward()
             return loss
 
