@@ -327,6 +327,30 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     tl_optimizer = None
     if tl_params:
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
+
+    if args.dataset == 'FC100':
+        X_transform_train = transforms.Compose([
+            lambda x: Image.fromarray(x),
+            transforms.RandomCrop(32, padding=4),
+            transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
+            transforms.RandomHorizontalFlip(),
+            lambda x: np.asarray(x),
+            transforms.ToTensor(),
+            normalize_fc100,
+        ])
+        X_transform_test = transform_test(normalize=normalize_fc100)
+    else:
+        X_transform_train = transforms.Compose([
+            lambda x: Image.fromarray(x),
+            transforms.RandomCrop(84, padding=8),
+            transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
+            transforms.RandomHorizontalFlip(),
+            lambda x: np.asarray(x),
+            transforms.ToTensor(),
+            normalize_mini,
+        ])
+        X_transform_test = transform_test(normalize=normalize_mini)
+
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
     result = None
@@ -345,38 +369,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 head_optimizer.zero_grad()
                 if tl_optimizer is not None:
                     tl_optimizer.zero_grad()
-                if args.dataset == 'FC100':
-                    #X_transform = transform_train(normalize=normalize_fc100, crop_size=32, padding=4)
-                    X_transform=    transforms.Compose([
-                        lambda x: Image.fromarray(x),
-                        transforms.RandomCrop(32, padding=4),
-                        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-                        transforms.RandomHorizontalFlip(),
-                        lambda x: np.asarray(x),
-                        transforms.ToTensor(),
-                        normalize_fc100
-                    ])
-                else:
-                    #X_transform = transform_train(normalize=normalize_mini, crop_size=84)
-                    X_transform=    transforms.Compose([
-                        lambda x: Image.fromarray(x),
-                                    #transforms.ToPILImage(),
-                        transforms.RandomCrop(84, padding=8),
-                        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-                        transforms.RandomHorizontalFlip(),
-                        lambda x: np.asarray(x),
-                        transforms.ToTensor(),
-                        normalize_mini
-                    ])
-    
+                X_transform = X_transform_train
             else:
                 N, K, Q = get_n_k_q(args, mode='test')
-                #N=args.N*2
                 gmodel.eval()
-                if args.dataset == 'FC100':
-                    X_transform = transform_test(normalize=normalize_fc100)
-                else:
-                    X_transform = transform_test(normalize=normalize_mini)
+                X_transform = X_transform_test
     
             if test_only==True:
                 K=test_only_k
