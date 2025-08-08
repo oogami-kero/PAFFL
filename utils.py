@@ -18,6 +18,28 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
+def get_n_k_q(args, mode='train', fewrel_multiplier=4):
+    '''Return dataset-specific N, K and Q values.
+
+    Args:
+        args: Argument namespace containing dataset configuration.
+        mode: Either 'train' or 'test'. Defaults to 'train'.
+        fewrel_multiplier: Multiplier applied to N for the 'fewrel' dataset.
+
+    Returns:
+        Tuple of integers representing (N, K, Q).
+    '''
+    if mode == 'train':
+        if args.dataset == 'fewrel':
+            return args.N * fewrel_multiplier, 2, 2
+        if args.dataset == 'huffpost':
+            return args.N, 5, args.Q
+        if args.dataset in {'FC100', 'miniImageNet'}:
+            return args.N * 4, 2, 2
+        return args.N, 5, args.Q
+    return args.N, args.K, args.Q
+
+
 def mkdirs(dirpath):
     try:
         os.makedirs(dirpath)

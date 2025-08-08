@@ -301,26 +301,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     orig_optimizer = dp_optimizer
 
-    if args.dataset == 'fewrel':
-        N = args.N * 4
-        K = 2
-        Q = 2
-    elif args.dataset == 'huffpost':
-        N = args.N
-        K = 5
-        Q = args.Q
-    elif args.dataset == 'FC100':
-        N = args.N * 4
-        K = 2
-        Q = 2
-    elif args.dataset == 'miniImageNet':
-        N = args.N * 4
-        K = 2
-        Q = 2
-    else:
-        N = args.N
-        K = 5
-        Q = args.Q
+    N, K, Q = get_n_k_q(args, mode='train')
     total_batch = N * K + N * Q
     sample_rate = total_batch / client_sample_size
 
@@ -356,28 +337,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             nonlocal dp_optimizer, head_optimizer, tl_optimizer, gmodel, base_model
     
             if mode == 'train':
-                loss_all=0
-    
-                if args.dataset=='fewrel' :
-                    N=args.N*4
-                    K=2
-                    Q=2
-                elif args.dataset=='huffpost':
-                    N = args.N
-                    K = 5#args.K
-                    Q = args.Q
-                elif args.dataset=='FC100':
-                    N=args.N*4
-                    K=2
-                    Q=2
-                elif args.dataset=='miniImageNet':
-                    N=args.N*4
-                    K=2
-                    Q=2
-                else:
-                    N = args.N
-                    K = 5#args.K
-                    Q = args.Q
+                loss_all = 0
+                N, K, Q = get_n_k_q(args, mode='train')
                 gmodel.train()
                 gmodel.zero_grad(set_to_none=True)  # clears param.grad and param.grad_sample
                 dp_optimizer.zero_grad()
@@ -409,9 +370,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     ])
     
             else:
-                N=args.N
-                K=args.K
-                Q=args.Q
+                N, K, Q = get_n_k_q(args, mode='test')
                 #N=args.N*2
                 gmodel.eval()
                 if args.dataset == 'FC100':
