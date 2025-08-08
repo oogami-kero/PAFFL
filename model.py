@@ -55,13 +55,15 @@ class LogisticRegression(nn.Module):
 
         optimizer.step(closure)
 
+    @torch.no_grad()
     def predict_proba(self, X):
         '''Return class probabilities for ``X``.'''
-        return F.softmax(self.forward(X), dim=-1)
+        return F.softmax(self.forward(X), dim=-1).to(X.device)
 
+    @torch.no_grad()
     def predict(self, X):
         '''Return class predictions for ``X``.'''
-        return torch.argmax(self.predict_proba(X), dim=-1)
+        return torch.argmax(self.predict_proba(X), dim=-1).to(X.device)
 
 
 class TransformLayer(nn.Module):
