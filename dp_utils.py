@@ -1,5 +1,4 @@
 import math
-import torch
 from opacus.grad_sample import GradSampleModule
 
 
@@ -38,51 +37,6 @@ def remove_dp_hooks(model):
                     delattr(p, attr)
 
     return model
-
-def compute_noisy_delta(global_params, local_params, clip_norm, noise_mult):
-    """Compute clipped and noised updates for differential privacy.
-
-    Parameters whose names begin with ``"transform_layer."`` or are equal to
-    ``"few_classify.weight"`` or ``"few_classify.bias"`` are skipped so that
-    personalized components and client-specific classifiers are never
-    aggregated or shared.
-    """
-    delta = {}
-    for k in global_params:
-        if (
-            k.startswith("transform_layer.")
-            or k == "few_classify.weight"
-            or k == "few_classify.bias"
-        ):
-            continue
-        if not torch.is_floating_point(global_params[k]):
-            # integer buffers like num_batches_tracked are left unchanged
-            continue
-        delta[k] = local_params[k] - global_params[k]
-
-    if not delta:
-        return {}, {}
-
-    vec = torch.cat([v.view(-1) for v in delta.values()])
-    norm = torch.norm(vec)
-
-    print(f"DEBUG: Unclipped Delta Norm = {norm.item()}")
-
-    scale = min(1.0, clip_norm / (norm + 1e-12))
-
-    print(f"DEBUG: Clipped Norm = {norm.item() * scale: .4f}")
-
-    for k in delta:
-        delta[k] = delta[k] * scale
-
-    delta_before_noise = {k: v.clone() for k, v in delta.items()}
-
-    if noise_mult > 0:
-        std = clip_norm * noise_mult
-        for k in delta:
-            delta[k] += torch.normal(0, std, size=delta[k].size(), device=delta[k].device)
-
-    return delta, delta_before_noise
 
 
 def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate=1.0):
