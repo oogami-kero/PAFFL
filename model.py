@@ -67,14 +67,28 @@ class LogisticRegression(nn.Module):
 
 
 class TransformLayer(nn.Module):
-    """Per-client data transformation layer T_k(x) = alpha * x + beta."""
+    """Per-client data transformation layer T_k(x) = alpha * x + beta.
 
-    def __init__(self, channels=3):
+    If ``channels`` is ``None``, parameters are initialized on the first forward pass.
+    """
+
+    def __init__(self, channels=None):
         super().__init__()
-        self.alpha = nn.Parameter(torch.ones(1, channels, 1, 1))
-        self.beta = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        self.channels = channels
+        if channels is None:
+            self.register_parameter('alpha', None)
+            self.register_parameter('beta', None)
+        else:
+            self.alpha = nn.Parameter(torch.ones(1, channels, 1, 1))
+            self.beta = nn.Parameter(torch.zeros(1, channels, 1, 1))
 
     def forward(self, x):
+        if self.alpha is None or self.beta is None:
+            self.channels = x.shape[1]
+            self.alpha = nn.Parameter(torch.ones(1, self.channels, 1, 1, device=x.device, dtype=x.dtype))
+            self.beta = nn.Parameter(torch.zeros(1, self.channels, 1, 1, device=x.device, dtype=x.dtype))
+        elif x.shape[1] != self.channels:
+            raise ValueError(f'Expected input with {self.channels} channels, but got {x.shape[1]}.')
         return self.alpha * x + self.beta
 
 
