@@ -261,10 +261,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     client_sample_size = len(y_train_client)
 
-    dp_params = [
-        p for n, p in base_model.named_parameters()
+    dp_named_params = [
+        (n, p) for n, p in base_model.named_parameters()
         if 'transform_layer' not in n and 'few_classify' not in n and 'transformer' not in n and p.requires_grad
     ]
+    dp_params = [p for _, p in dp_named_params]
     head_params = list(base_model.few_classify.parameters())
     tl_params = [p for n, p in base_model.named_parameters() if 'transform_layer' in n and p.requires_grad]
 
@@ -323,6 +324,15 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         )
         dp_optimizer.sample_rate = sample_rate
         dp_optimizer.expected_batch_size = total_batch
+    dp_named_params = [
+        (n, p) for n, p in gmodel.named_parameters()
+        if 'transform_layer' not in n and 'few_classify' not in n and 'transformer' not in n and p.requires_grad
+    ]
+    if not hasattr(args, 'grad_norms_ma'):
+        args.grad_norms_ma = {}
+    for name, _ in dp_named_params:
+        args.grad_norms_ma.setdefault(name, 0.0)
+    grad_ma_decay = 0.9
     tl_optimizer = None
     if tl_params:
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
@@ -536,6 +546,13 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         loss_all += contras_loss / Q *0.1
                     loss_all += loss_ce(out_all, y_total)
                     loss_all.backward()
+                    if args.use_dp:
+                        for name, param in dp_named_params:
+                            if param.grad is None:
+                                continue
+                            grad_norm = param.grad.detach().norm(2).item()
+                            prev = args.grad_norms_ma.get(name, grad_norm)
+                            args.grad_norms_ma[name] = grad_ma_decay * prev + (1 - grad_ma_decay) * grad_norm
                     dp_optimizer.step()
                     head_optimizer.step()
                     if tl_optimizer is not None:
@@ -652,6 +669,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 del acc, max_value, index
             result = (np.mean(accs), torch.cat(max_values, 0), torch.cat(indices, 0))
 
+        if args.use_dp and args.grad_norms_ma:
+            args.dp_clip = float(np.percentile(list(args.grad_norms_ma.values()), 90))
         if np.random.rand() < 0.3:
             print('Meta-test_Accuracy: {:.4f}'.format(np.mean(accs)))
         #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
