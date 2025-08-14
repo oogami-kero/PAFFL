@@ -19,6 +19,7 @@ from model import WordEmbed
 from utils import *
 from opacus import PrivacyEngine
 from opacus.grad_sample import GradSampleModule
+import dp_utils
 from dp_utils import remove_dp_hooks
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
@@ -669,8 +670,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     finally:
         if args.use_dp:
-            if hasattr(privacy_engine, 'accountant'):
-                epsilon = privacy_engine.accountant.get_epsilon(args.dp_delta)
             if hasattr(privacy_engine, 'detach'):
                 gmodel, dp_optimizer, _ = privacy_engine.detach()
                 privacy_engine = None
@@ -716,15 +715,13 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
         if test_only==False:
             net.train()
-            testacc, eps = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+            train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device=device, test_only=False)
-            epsilon = eps
         else:
             net.train()
-            result, eps = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+            result, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device=device, test_only=True, test_only_k=test_only_k)
             testacc, max_values, indices = result
-            epsilon = eps
             max_value_all_clients.append(max_values)
             indices_all_clients.append(indices)
 
@@ -941,7 +938,16 @@ if __name__ == '__main__':
                         '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
 
 
-            _, epsilon = local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+            local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+
+            dp_steps += args.num_train_tasks * len(participating_ids)
+            epsilon = dp_utils.compute_epsilon(
+                dp_steps,
+                args.dp_noise,
+                args.dp_delta,
+                accountant='rdp',
+                sampling_rate=len(participating_ids) / args.n_parties,
+            )
 
             total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
             fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
@@ -974,7 +980,7 @@ if __name__ == '__main__':
 
             print('>> Current Round: {}'.format(round))
             logger.info('>> Current Round: {}'.format(round))
-            if args.use_dp and epsilon is not None and args.print_eps:
+            if args.use_dp and args.print_eps:
                 print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
                 logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
 
