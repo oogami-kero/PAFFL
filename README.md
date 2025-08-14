@@ -51,6 +51,24 @@ python main_image.py --dataset miniImageNet --use_transform_layer 1 --use_dp 1 -
 ```
 When `--print_eps 1`, the final ε and δ are printed after training.
 
+### Choosing a noise multiplier for a target ε
+
+The helper `find_noise_multiplier` in `dp_utils.py` searches for a noise multiplier that achieves a desired privacy budget:
+
+```python
+from dp_utils import find_noise_multiplier
+
+sigma = find_noise_multiplier(
+    num_steps=100,           # total number of DP steps
+    target_eps=1.0,          # desired epsilon
+    delta=1e-5,
+    accountant='rdp',
+    sampling_rate=0.01,      # client sampling rate q
+)
+```
+
+Use the returned `sigma` as the value for `--dp_noise` when running the training scripts.
+
 
 ## Citation
 Welcome to cite our work! </br>

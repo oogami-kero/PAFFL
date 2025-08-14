@@ -69,3 +69,62 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
         return eps
 
     return math.sqrt(2 * num_steps * math.log(1 / delta)) / noise_mult
+
+
+def find_noise_multiplier(
+    num_steps,
+    target_eps,
+    delta,
+    accountant=None,
+    sampling_rate=1.0,
+    sigma_min=0.5,
+    sigma_max=10.0,
+    tol=0.05,
+    max_iter=50,
+):
+    """Binary search for a noise multiplier that meets a target ``epsilon``.
+
+    Parameters
+    ----------
+    num_steps : int
+        Total number of noisy updates that will be applied.
+    target_eps : float
+        Desired privacy guarantee.
+    delta : float
+        Target ``delta`` parameter of differential privacy.
+    accountant : str, optional
+        Accounting method passed through to :func:`compute_epsilon`.
+    sampling_rate : float, optional
+        Client participation probability when ``accountant='rdp'``.
+    sigma_min, sigma_max : float, optional
+        Search range for the noise multiplier.
+    tol : float, optional
+        Tolerance for the returned ``epsilon``.
+    max_iter : int, optional
+        Maximum number of search iterations.
+
+    Returns
+    -------
+    float
+        Noise multiplier that yields ``epsilon`` within ``tol`` of ``target_eps``.
+    """
+
+    def eps_for(sigma):
+        return compute_epsilon(num_steps, sigma, delta, accountant, sampling_rate)
+
+    eps_low = eps_for(sigma_min)
+    eps_high = eps_for(sigma_max)
+    if eps_low < target_eps or eps_high > target_eps:
+        raise ValueError('Target epsilon is not bracketed by search range')
+
+    lo, hi = sigma_min, sigma_max
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        eps = eps_for(mid)
+        if eps > target_eps:
+            lo = mid
+        else:
+            hi = mid
+        if abs(eps - target_eps) <= tol:
+            break
+    return hi
