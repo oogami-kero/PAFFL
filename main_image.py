@@ -715,8 +715,11 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
         if test_only==False:
             net.train()
-            train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
-                                        device=device, test_only=False)
+            result, epsilon = train_net_few_shot_new(
+                net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+                device=device, test_only=False
+            )
+            testacc = result
         else:
             net.train()
             result, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
