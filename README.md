@@ -35,21 +35,29 @@ Note that the text model requires the GloVe embedding file named 'glove.42B.300d
 
 ## New Features
 
-The repository now includes optional support for a **personalised transformation layer** and **DP-SGD** training with a privacy accountant.
+The repository now includes optional support for a **personalised transformation layer** and **differential privacy** with a privacy accountant.
 
 * Enable the transformation layer with `--use_transform_layer 1`. Each client learns its own affine layer `T_k(x) = α ⊙ x + β` that is excluded from model aggregation.
-* Enable DP-SGD with `--use_dp 1`. The following arguments control the behaviour:
+* Differential privacy is controlled via `--dp_mode`:
+  * `local` (default): apply DP-SGD on each client.
+  * `server`: clip and noise client updates on the server.
+  * `off`: disable differential privacy.
   * `--dp_clip`: clipping norm (default `1.0`)
-  * `--dp_noise`: noise multiplier added after clipping
+  * `--dp_noise`: noise multiplier
   * `--dp_delta`: target delta for privacy accounting (default `1e-5`)
   * `--print_eps`: output the current ε after each communication round when set to `1`
 
-Example:
+Examples:
 
 ```
-python main_image.py --dataset miniImageNet --use_transform_layer 1 --use_dp 1 --dp_clip 0.5 --dp_noise 0.2 --dp_delta 1e-5 --print_eps 1
+# Local DP
+python main_image.py --dataset miniImageNet --dp_mode local --dp_noise 0.2
+# Server DP
+python main_image.py --dataset miniImageNet --dp_mode server --dp_noise 0.2
+# No DP
+python main_image.py --dataset miniImageNet --dp_mode off
 ```
-When `--print_eps 1`, the final ε and δ are printed after training.
+When `--print_eps 1`, the current ε and δ are printed after each round.
 
 ### Choosing a noise multiplier for a target ε
 

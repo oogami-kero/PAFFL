@@ -193,8 +193,10 @@ def get_args():
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
+    parser.add_argument('--dp_mode', choices=['local', 'server', 'off'], default='local')
     parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
     args = parser.parse_args()
+    args.use_dp = int(args.dp_mode != 'off')
     return args
 
 
@@ -312,7 +314,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     sample_rate = total_batch / client_sample_size
 
     privacy_engine = None
-    if args.use_dp and dp_params:
+    if args.dp_mode == 'local' and dp_params:
         noise_mult = getattr(args, 'dp_noise', 0.0)
         clip = getattr(args, 'dp_clip', 1.0)
         privacy_engine = PrivacyEngine(accountant='rdp')
@@ -396,7 +398,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             query_batch = N * Q
             total_batch = support_batch + query_batch
             sample_rate = total_batch / client_sample_size
-            if args.use_dp:
+            if args.dp_mode == 'local':
                 dp_optimizer.expected_batch_size = total_batch
                 dp_optimizer.sample_rate = sample_rate
     
@@ -548,7 +550,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         loss_all += contras_loss / Q * 0.1
                     loss_all += loss_ce(out_all, y_total)
                     loss_all.backward()
-                    if args.use_dp:
+                    if args.dp_mode == 'local':
                         for name, param in dp_named_params:
                             if param.grad is None:
                                 continue
@@ -680,7 +682,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 del acc, max_value, index
             result = (np.mean(accs), torch.cat(max_values, 0), torch.cat(indices, 0))
 
-        if args.use_dp and args.grad_norms_ma:
+        if args.dp_mode == 'local' and args.grad_norms_ma:
             args.dp_clip = float(np.percentile(list(args.grad_norms_ma.values()), 90))
         if np.random.rand() < 0.3:
             print('Meta-test_Accuracy: {:.4f}'.format(np.mean(accs)))
@@ -688,7 +690,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
 
     finally:
-        if args.use_dp:
+        if args.dp_mode == 'local':
             if hasattr(privacy_engine, 'detach'):
                 gmodel, dp_optimizer, _ = privacy_engine.detach()
                 privacy_engine = None
@@ -703,42 +705,33 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
     avg_acc = 0.0
     acc_list = []
-    max_value_all_clients=[]
-    indices_all_clients=[]
+    max_value_all_clients = []
+    indices_all_clients = []
     epsilon = None
+    deltas = {}
 
     for net_id, net in nets.items():
         print(net_id)
         nets[net_id] = net
 
-        #net.cuda()
-
         dataidxs = net_dataidx_map[net_id]
 
-        #logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
-        
-    
         n_epoch = args.epochs
-        
-        #_,_, train_ds, test_ds = get_dataloader(args.dataset, args.datadir, args.batch_size, len(dataidxs), dataidxs)
-        
-        #X_train_client=train_ds.data
-        #y_train_client=train_ds.target
-        
-        X_train_client=X_train[dataidxs]
-        y_train_client=y_train[dataidxs]
-        
-        #X_test=test_ds.data
-        #y_test=test_ds.target
 
+        X_train_client = X_train[dataidxs]
+        y_train_client = y_train[dataidxs]
 
-        if test_only==False:
+        if test_only is False:
+            prev_params = copy.deepcopy(net.state_dict())
             net.train()
             result, epsilon = train_net_few_shot_new(
                 net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                 device=device, test_only=False
             )
             testacc = result
+            if args.dp_mode == 'server':
+                new_params = net.state_dict()
+                deltas[net_id] = {k: new_params[k] - prev_params[k] for k in new_params}
         else:
             net.train()
             result, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
@@ -756,28 +749,24 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
             indices_all_clients = torch.stack(indices_all_clients, 0)
             return acc_list, max_value_all_clients, indices_all_clients, epsilon
 
-        #logger.info("net {} final test acc {:.4f}" .format(net_id, testacc))
-
         avg_acc += testacc
         acc_list.append(testacc)
-
-
-
-        #net.cpu()
 
     logger.info(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
     print(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
 
     if test_only:
-        max_value_all_clients=torch.stack(max_value_all_clients,0)
-        indices_all_clients=torch.stack(indices_all_clients,0)
+        max_value_all_clients = torch.stack(max_value_all_clients, 0)
+        indices_all_clients = torch.stack(indices_all_clients, 0)
         return acc_list, max_value_all_clients, indices_all_clients, epsilon
 
     avg_acc /= args.n_parties
     if args.alg == 'local_training':
-        logger.info("avg test acc %f" % avg_acc)
-        logger.info("std acc %f" % np.std(acc_list))
+        logger.info('avg test acc %f' % avg_acc)
+        logger.info('std acc %f' % np.std(acc_list))
 
+    if args.dp_mode == 'server':
+        return deltas, epsilon
     return nets, epsilon
 
 
@@ -959,34 +948,56 @@ if __name__ == '__main__':
                     logger.info(
                         '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
 
+            if args.dp_mode == 'server':
+                deltas, _ = local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+            else:
+                local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
 
-            local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+            if args.dp_mode == 'local':
+                dp_steps += args.num_train_tasks * len(participating_ids)
+            elif args.dp_mode == 'server':
+                dp_steps += 1
+            if args.dp_mode != 'off':
+                epsilon = dp_utils.compute_epsilon(
+                    dp_steps,
+                    args.dp_noise,
+                    args.dp_delta,
+                    accountant='rdp',
+                    sampling_rate=len(participating_ids) / args.n_parties,
+                )
 
-            dp_steps += args.num_train_tasks * len(participating_ids)
-            epsilon = dp_utils.compute_epsilon(
-                dp_steps,
-                args.dp_noise,
-                args.dp_delta,
-                accountant='rdp',
-                sampling_rate=len(participating_ids) / args.n_parties,
-            )
+            if args.dp_mode == 'server':
+                clipped_deltas = []
+                for client_id in participating_ids:
+                    delta = deltas[client_id]
+                    flat = torch.cat([v.view(-1) for v in delta.values()])
+                    norm = torch.norm(flat)
+                    scale = min(1.0, args.dp_clip / (norm + 1e-12))
+                    clipped_deltas.append({k: v * scale for k, v in delta.items()})
+                for key in global_w:
+                    if 'transform_layer' in key:
+                        continue
+                    stacked = torch.stack([d[key] for d in clipped_deltas])
+                    avg_update = stacked.mean(dim=0)
+                    noise = torch.randn_like(avg_update) * args.dp_noise * args.dp_clip
+                    global_w[key] += avg_update + noise
+            else:
+                total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
+                fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
 
-            total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
-            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
-
-            for net_id, client_id in enumerate(participating_ids):
-                net = nets_this_round[client_id]
-                net_para = net.state_dict()
-                if net_id == 0:
-                    for key in net_para:
-                        if 'transform_layer' in key:
-                            continue
-                        global_w[key] = net_para[key] * fed_avg_freqs[net_id]
-                else:
-                    for key in net_para:
-                        if 'transform_layer' in key:
-                            continue
-                        global_w[key] += net_para[key] * fed_avg_freqs[net_id]
+                for net_id, client_id in enumerate(participating_ids):
+                    net = nets_this_round[client_id]
+                    net_para = net.state_dict()
+                    if net_id == 0:
+                        for key in net_para:
+                            if 'transform_layer' in key:
+                                continue
+                            global_w[key] = net_para[key] * fed_avg_freqs[net_id]
+                    else:
+                        for key in net_para:
+                            if 'transform_layer' in key:
+                                continue
+                            global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
@@ -1002,7 +1013,7 @@ if __name__ == '__main__':
 
             print('>> Current Round: {}'.format(round))
             logger.info('>> Current Round: {}'.format(round))
-            if args.use_dp and args.print_eps:
+            if args.dp_mode != 'off' and args.print_eps:
                 print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
                 logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
 
