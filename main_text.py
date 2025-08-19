@@ -131,7 +131,8 @@ def get_args():
     parser.add_argument('--fine_tune_lr', type=float, default=0.1, help='number of meta-learning lr (0.05)')
     parser.add_argument('--meta_lr', type=float, default=0.5/100, help='number of meta-learning lr (0.05)')
     parser.add_argument('--comm_round', type=int, default=5000, help='number of maximum communication roun')
-    parser.add_argument('--optimizer', type=str, default='adam', help='the optimizer')
+    parser.add_argument('--optimizer', type=str, default='adam',
+                        help='optimizer: sgd, adam, amsgrad, or adamw')
     
     
     parser.add_argument("--bert_cache_dir", default=None, type=str,
@@ -181,6 +182,10 @@ def get_args():
     parser.add_argument('--save_model',type=int,default=0)
     parser.add_argument('--use_project_head', type=int, default=1)
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
+    parser.add_argument('--convergence_patience', type=int, default=0,
+                        help='stop if accuracy does not improve after this many rounds (0 to disable)')
+    parser.add_argument('--convergence_delta', type=float, default=0.0,
+                        help='minimum accuracy improvement to reset patience')
     parser.add_argument('--use_transform_layer', type=int, default=0,
                         help='enable personalized transformation layer')
     parser.add_argument('--use_dp', type=int, default=0, help='enable DP-SGD')
@@ -289,6 +294,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             weight_decay=args.reg,
             amsgrad=True,
         )
+    elif args_optimizer == 'adamw':
+        dp_optimizer = optim.AdamW(dp_params, lr=lr, weight_decay=args.reg)
+        head_optimizer = optim.AdamW(head_params, lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'sgd':
         dp_optimizer = optim.SGD(
             dp_params,
@@ -905,10 +913,11 @@ if __name__ == '__main__':
         for key in moment_v:
             moment_v[key] = 0
     if args.alg == 'fedavg':
-        use_minus=False
-        best_acc=0
-        best_confident_acc=0
-        best_acc_5=0
+        use_minus = False
+        best_acc = 0
+        best_confident_acc = 0
+        best_acc_5 = 0
+        no_improve = 0
 
         dp_steps = 0
         for round in range(n_comm_rounds):
@@ -941,12 +950,14 @@ if __name__ == '__main__':
             for k in [1,5]:
                 global_acc, max_value_all_clients, indices_all_clients, _ = local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, test_only=True, test_only_k=k)
                 global_acc = max(global_acc)
-                if k==1:
-                    if global_acc > best_acc:
+                if k == 1:
+                    if global_acc > best_acc + args.convergence_delta:
                         best_acc = global_acc
+                        no_improve = 0
+                    else:
+                        no_improve += 1
                     print('>> Global 1 Model Test accuracy: {:.4f} Best Acc: {:.4f}'.format(global_acc, best_acc))
-                    logger.info(
-                        '>> Global 1 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc))
+                    logger.info('>> Global 1 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc))
                 elif k==5:
                     if global_acc > best_acc_5:
                         best_acc_5 = global_acc
@@ -1011,3 +1022,8 @@ if __name__ == '__main__':
             if global_acc > best_acc:
                 torch.save(global_model.state_dict(), args.modeldir+'fedavg/'+'globalmodel'+args.log_file_name+'.pth')
                 torch.save(nets[0].state_dict(), args.modeldir+'fedavg/'+'localmodel0'+args.log_file_name+'.pth')
+
+            if args.convergence_patience and no_improve >= args.convergence_patience:
+                print('>> Early stopping triggered')
+                logger.info('>> Early stopping triggered')
+                break
