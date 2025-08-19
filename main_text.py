@@ -19,7 +19,6 @@ from model import WordEmbed
 from utils import *
 from opacus import PrivacyEngine
 from opacus.grad_sample import GradSampleModule
-from opacus.optimizers import DPAdam
 import dp_utils
 from dp_utils import remove_dp_hooks
 import warnings
@@ -192,8 +191,6 @@ def get_args():
     parser.add_argument('--dp_accountant', choices=['rdp', 'prv'], default='rdp',
                         help='DP accountant to estimate the privacy budget')
     parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
-    parser.add_argument('--convergence_threshold', type=float, default=0.0,
-                        help='early stop when global model change falls below this value')
     args = parser.parse_args()
     args.use_dp = int(args.dp_mode != 'off')
     return args
@@ -264,38 +261,21 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     base_model = net
     base_model.train()
     gmodel = base_model
-    if args_optimizer == 'dpadam':
-        gmodel = GradSampleModule(base_model)
     model_template = copy.deepcopy(base_model)   # DP-free template
 
     client_sample_size = len(y_train_client)
 
     dp_named_params = [
-        (n, p) for n, p in gmodel.named_parameters()
+        (n, p) for n, p in base_model.named_parameters()
         if 'transform_layer' not in n and 'few_classify' not in n and 'transformer' not in n and p.requires_grad
     ]
     dp_params = [p for _, p in dp_named_params]
-    head_params = list(gmodel.few_classify.parameters())
-    tl_params = [p for n, p in gmodel.named_parameters() if 'transform_layer' in n and p.requires_grad]
+    head_params = list(base_model.few_classify.parameters())
+    tl_params = [p for n, p in base_model.named_parameters() if 'transform_layer' in n and p.requires_grad]
 
     if args_optimizer == 'adam':
         dp_optimizer = optim.Adam(dp_params, lr=lr, weight_decay=args.reg)
         head_optimizer = optim.Adam(head_params, lr=lr, weight_decay=args.reg)
-    elif args_optimizer == 'dpadam':
-        dp_optimizer = DPAdam(
-            dp_params,
-            lr=lr,
-            weight_decay=args.reg,
-            noise_multiplier=getattr(args, 'dp_noise', 0.0),
-            max_grad_norm=getattr(args, 'dp_clip', 1.0),
-        )
-        head_optimizer = DPAdam(
-            head_params,
-            lr=lr,
-            weight_decay=args.reg,
-            noise_multiplier=getattr(args, 'dp_noise', 0.0),
-            max_grad_norm=getattr(args, 'dp_clip', 1.0),
-        )
     elif args_optimizer == 'amsgrad':
         dp_optimizer = optim.Adam(
             dp_params,
@@ -330,12 +310,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     sample_rate = total_batch / client_sample_size
 
     privacy_engine = None
-    if args_optimizer == 'dpadam':
-        dp_optimizer.sample_rate = sample_rate
-        dp_optimizer.expected_batch_size = total_batch
-        head_optimizer.sample_rate = sample_rate
-        head_optimizer.expected_batch_size = total_batch
-    elif args.dp_mode == 'local' and dp_params:
+    if args.dp_mode == 'local' and dp_params:
         noise_mult = getattr(args, 'dp_noise', 0.0)
         clip = getattr(args, 'dp_clip', 1.0)
         privacy_engine = PrivacyEngine(accountant='rdp')
@@ -940,10 +915,9 @@ if __name__ == '__main__':
             #logger.info("in comm round:" + str(round))
             party_list_this_round = party_list_rounds[round]
 
-            prev_global_w = copy.deepcopy(global_model.state_dict())
-            global_w = copy.deepcopy(prev_global_w)
+            global_w = global_model.state_dict()
             if args.server_momentum:
-                old_w = copy.deepcopy(prev_global_w)
+                old_w = copy.deepcopy(global_model.state_dict())
 
             nets_this_round = {k: nets[k] for k in party_list_this_round}
             participating_ids = list(nets_this_round.keys())
@@ -1022,14 +996,6 @@ if __name__ == '__main__':
                     delta_w[key] = old_w[key] - global_w[key]
                     moment_v[key] = args.server_momentum * moment_v[key] + (1-args.server_momentum) * delta_w[key]
                     global_w[key] = old_w[key] - moment_v[key]
-
-            if args.convergence_threshold:
-                diff = torch.sqrt(sum(torch.sum((prev_global_w[k] - global_w[k]) ** 2) for k in global_w))
-                if diff < args.convergence_threshold:
-                    print(f'Converged with global model change {diff.item():.6f}, stopping.')
-                    logger.info(f'Converged with global model change {diff.item():.6f}, stopping.')
-                    global_model.load_state_dict(global_w)
-                    break
 
             global_model.load_state_dict(global_w)
 
