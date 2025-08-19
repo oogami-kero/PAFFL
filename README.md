@@ -46,6 +46,9 @@ The repository now includes optional support for a **personalised transformation
   * `--dp_noise`: noise multiplier
   * `--dp_delta`: target delta for privacy accounting (default `1e-5`)
   * `--print_eps`: output the current ε after each communication round when set to `1`
+* Server momentum can be enabled with `--server_momentum <beta>` to use FedAvgM.
+* Set `--optimizer dpadam` to train with the DPAdam optimizer when using differential privacy.
+* Use `--convergence_threshold <value>` to stop early once the global model change falls below the given value.
 
 Examples:
 
