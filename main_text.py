@@ -767,8 +767,13 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     return nets, epsilon
 
 
-def aggregate_deltas(global_w, deltas, args):
-    """Aggregate client deltas with clipping and noise."""
+def aggregate_deltas(global_w, deltas, args, noise_multipliers: dict[str, float] | None = None):
+    """Aggregate client deltas with clipping and noise.
+
+    Optionally applies parameter-specific noise multipliers when ``noise_multipliers``
+    is provided. The mapping should contain parameter names as keys and scaling
+    factors relative to ``args.dp_noise`` as values.
+    """
     clipped = []
     for delta in deltas.values():
         flat = torch.cat([v.view(-1) for v in delta.values()])
@@ -780,7 +785,8 @@ def aggregate_deltas(global_w, deltas, args):
             continue
         stacked = torch.stack([d[key] for d in clipped])
         avg_update = stacked.mean(dim=0)
-        noise = torch.randn_like(avg_update) * args.dp_noise * args.dp_clip
+        noise_mult = args.dp_noise if noise_multipliers is None else noise_multipliers.get(key, args.dp_noise)
+        noise = torch.randn_like(avg_update) * noise_mult * args.dp_clip
         global_w[key] += avg_update + noise
 
 
@@ -983,7 +989,11 @@ if __name__ == '__main__':
                 )
 
             if args.dp_mode == 'server':
-                aggregate_deltas(global_w, deltas, args)
+                noise_multipliers = {name: args.dp_noise for name in global_w}
+                for name in noise_multipliers:
+                    if name.endswith('bias'):
+                        noise_multipliers[name] *= 0.5
+                aggregate_deltas(global_w, deltas, args, noise_multipliers)
             else:
                 total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
                 fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
