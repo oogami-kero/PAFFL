@@ -51,11 +51,13 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
     delta : float
         Target ``delta`` parameter of differential privacy.
     accountant : str, optional
-        If set to ``"rdp"`` an approximate R\u00E9nyi DP accountant is used for
-        composition. Otherwise a basic strong composition bound is used.
+        If ``'rdp'`` an approximate R\u00E9nyi DP accountant is used for composition.
+        If ``'prv'`` a privacy random variable accountant from ``prv_accountant``
+        computes ε via a PLD representation. Any other value falls back to a
+        basic strong composition bound.
     sampling_rate : float, optional
-        Probability that a given client participates in a round. This is only
-        used when ``accountant='rdp'``.
+        Probability that a given client participates in a round. Only used when
+        ``accountant`` is ``'rdp'`` or ``'prv'``.
     """
     if noise_mult == 0:
         return float('inf')
@@ -67,6 +69,18 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
             rdp.append(num_steps * (sampling_rate ** 2) * order / (2 * noise_mult ** 2))
         eps = min(r - math.log(delta) / (o - 1) for r, o in zip(rdp, orders))
         return eps
+
+    if accountant == 'prv':
+        from prv_accountant import Accountant
+
+        accountant = Accountant(
+            noise_multiplier=noise_mult,
+            sampling_probability=sampling_rate,
+            delta=delta,
+            max_compositions=num_steps,
+            eps_error=0.1,
+        )
+        return accountant.compute_epsilon(num_steps)[2]
 
     return math.sqrt(2 * num_steps * math.log(1 / delta)) / noise_mult
 
@@ -95,7 +109,7 @@ def find_noise_multiplier(
     accountant : str, optional
         Accounting method passed through to :func:`compute_epsilon`.
     sampling_rate : float, optional
-        Client participation probability when ``accountant='rdp'``.
+        Client participation probability when ``accountant`` is ``'rdp'`` or ``'prv'``.
     sigma_min, sigma_max : float, optional
         Search range for the noise multiplier.
     tol : float, optional
