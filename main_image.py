@@ -194,6 +194,8 @@ def get_args():
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
     parser.add_argument('--dp_mode', choices=['local', 'server', 'off'], default='server')
+    parser.add_argument('--dp_accountant', choices=['rdp', 'prv'], default='rdp',
+                        help='DP accountant to estimate the privacy budget')
     parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
     args = parser.parse_args()
     args.use_dp = int(args.dp_mode != 'off')
@@ -979,7 +981,7 @@ if __name__ == '__main__':
                     dp_steps,
                     args.dp_noise,
                     args.dp_delta,
-                    accountant='rdp',
+                    accountant=args.dp_accountant,
                     sampling_rate=len(participating_ids) / args.n_parties,
                 )
 
