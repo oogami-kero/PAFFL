@@ -193,7 +193,7 @@ def get_args():
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
-    parser.add_argument('--dp_mode', choices=['local', 'server', 'off'], default='local')
+    parser.add_argument('--dp_mode', choices=['local', 'server', 'off'], default='server')
     parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
     args = parser.parse_args()
     args.use_dp = int(args.dp_mode != 'off')
@@ -770,6 +770,23 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     return nets, epsilon
 
 
+def aggregate_deltas(global_w, deltas, args):
+    """Aggregate client deltas with clipping and noise."""
+    clipped = []
+    for delta in deltas.values():
+        flat = torch.cat([v.view(-1) for v in delta.values()])
+        norm = torch.norm(flat)
+        scale = min(1.0, args.dp_clip / (norm + 1e-12))
+        clipped.append({k: v * scale for k, v in delta.items()})
+    for key in global_w:
+        if 'transform_layer' in key:
+            continue
+        stacked = torch.stack([d[key] for d in clipped])
+        avg_update = stacked.mean(dim=0)
+        noise = torch.randn_like(avg_update) * args.dp_noise * args.dp_clip
+        global_w[key] += avg_update + noise
+
+
 if __name__ == '__main__':
     args = get_args()
     print(args)
@@ -967,20 +984,7 @@ if __name__ == '__main__':
                 )
 
             if args.dp_mode == 'server':
-                clipped_deltas = []
-                for client_id in participating_ids:
-                    delta = deltas[client_id]
-                    flat = torch.cat([v.view(-1) for v in delta.values()])
-                    norm = torch.norm(flat)
-                    scale = min(1.0, args.dp_clip / (norm + 1e-12))
-                    clipped_deltas.append({k: v * scale for k, v in delta.items()})
-                for key in global_w:
-                    if 'transform_layer' in key:
-                        continue
-                    stacked = torch.stack([d[key] for d in clipped_deltas])
-                    avg_update = stacked.mean(dim=0)
-                    noise = torch.randn_like(avg_update) * args.dp_noise * args.dp_clip
-                    global_w[key] += avg_update + noise
+                aggregate_deltas(global_w, deltas, args)
             else:
                 total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
                 fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
