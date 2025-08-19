@@ -59,6 +59,10 @@ python main_image.py --dataset miniImageNet --dp_mode off
 ```
 When `--print_eps 1`, the current ε and δ are printed after each round.
 
+* Enable server momentum with `--server_momentum <m>` to use FedAvgM for faster convergence.
+* Select DP-compatible optimizers via `--optimizer`. In addition to `sgd`, `adam`, and `amsgrad`, `adamw` is supported and becomes DP-AdamW when differential privacy is enabled.
+* Training can stop early when global accuracy plateaus. Set `--convergence_patience` and `--convergence_delta` to monitor convergence and exit before reaching the full `--comm_round`.
+
 ### Choosing a noise multiplier for a target ε
 
 The helper `find_noise_multiplier` in `dp_utils.py` searches for a noise multiplier that achieves a desired privacy budget:
