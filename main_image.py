@@ -749,7 +749,11 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 new_params = net.state_dict()
                 delta = {k: new_params[k] - prev_params[k] for k in new_params}
                 deltas[net_id] = delta
-                flat = torch.cat([v.view(-1) for v in delta.values()])
+                flat = torch.cat([
+                    v.view(-1)
+                    for k, v in delta.items()
+                    if not any(s in k for s in ('running_mean', 'running_var', 'num_batches_tracked'))
+                ])
                 norm = torch.norm(flat).item()
                 prev = args.client_grad_norms.get(net_id, norm)
                 args.client_grad_norms[net_id] = grad_ma_decay * prev + (1 - grad_ma_decay) * norm
@@ -791,7 +795,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     return nets, epsilon
 
 
-def aggregate_deltas(global_w, deltas, args, noise_multipliers=None):
+def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=False):
     """Aggregate client deltas with clipping and layer-specific noise.
 
     Noise is scaled by the number of participating clients to maintain the
@@ -802,10 +806,15 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None):
         deltas (dict): Client updates keyed by client id.
         args (Namespace): Training arguments.
         noise_multipliers (dict, optional): Parameter-specific noise multipliers.
+        reset_bn (bool, optional): Reset BatchNorm statistics after aggregation.
     """
     clipped = []
     for delta in deltas.values():
-        flat = torch.cat([v.view(-1) for v in delta.values()])
+        flat = torch.cat([
+            v.view(-1)
+            for k, v in delta.items()
+            if not any(s in k for s in ('running_mean', 'running_var', 'num_batches_tracked'))
+        ])
         norm = torch.norm(flat)
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
         clipped.append({k: v * scale for k, v in delta.items()})
@@ -813,6 +822,14 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None):
     base_noise_std = args.dp_noise * args.dp_clip / num_clients
     logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
     for key in global_w:
+        if any(s in key for s in ('running_mean', 'running_var', 'num_batches_tracked')):
+            global_w[key] += torch.stack([d[key] for d in deltas.values()]).mean(0)
+            if reset_bn:
+                if 'running_var' in key:
+                    global_w[key].fill_(1.0)
+                else:
+                    global_w[key].zero_()
+            continue
         if 'transform_layer' in key:
             continue
         stacked = torch.stack([d[key] for d in clipped])
