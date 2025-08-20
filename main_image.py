@@ -792,6 +792,9 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 def aggregate_deltas(global_w, deltas, args, noise_multipliers=None):
     """Aggregate client deltas with clipping and layer-specific noise.
 
+    Noise is scaled by the number of participating clients to maintain the
+    expected privacy budget regardless of the number of contributions.
+
     Args:
         global_w (dict): Global model weights to be updated.
         deltas (dict): Client updates keyed by client id.
@@ -804,6 +807,9 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None):
         norm = torch.norm(flat)
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
         clipped.append({k: v * scale for k, v in delta.items()})
+    num_clients = len(clipped) or 1
+    base_noise_std = args.dp_noise * args.dp_clip / num_clients
+    logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
     for key in global_w:
         if 'transform_layer' in key:
             continue
@@ -812,7 +818,7 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None):
         noise_mult = args.dp_noise
         if noise_multipliers is not None:
             noise_mult = noise_multipliers.get(key, args.dp_noise)
-        noise = torch.randn_like(avg_update) * noise_mult * args.dp_clip
+        noise = torch.randn_like(avg_update) * noise_mult * args.dp_clip / num_clients
         global_w[key] += avg_update + noise
 
 

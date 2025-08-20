@@ -779,9 +779,9 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 def aggregate_deltas(global_w, deltas, args, noise_multipliers: dict[str, float] | None = None):
     """Aggregate client deltas with clipping and noise.
 
-    Optionally applies parameter-specific noise multipliers when ``noise_multipliers``
-    is provided. The mapping should contain parameter names as keys and scaling
-    factors relative to ``args.dp_noise`` as values.
+    Noise is scaled by the number of participating clients. When
+    ``noise_multipliers`` is provided, parameter-specific multipliers are applied
+    on top of the base noise multiplier ``args.dp_noise``.
     """
     clipped = []
     for delta in deltas.values():
@@ -789,13 +789,16 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers: dict[str, float]
         norm = torch.norm(flat)
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
         clipped.append({k: v * scale for k, v in delta.items()})
+    num_clients = len(clipped) or 1
+    base_noise_std = args.dp_noise * args.dp_clip / num_clients
+    logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
     for key in global_w:
         if 'transform_layer' in key:
             continue
         stacked = torch.stack([d[key] for d in clipped])
         avg_update = stacked.mean(dim=0)
         noise_mult = args.dp_noise if noise_multipliers is None else noise_multipliers.get(key, args.dp_noise)
-        noise = torch.randn_like(avg_update) * noise_mult * args.dp_clip
+        noise = torch.randn_like(avg_update) * noise_mult * args.dp_clip / num_clients
         global_w[key] += avg_update + noise
 
 
