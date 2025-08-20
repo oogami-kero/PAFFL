@@ -198,7 +198,7 @@ def get_args():
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
-    parser.add_argument('--dp_clip_max', type=float, default=10.0, help='maximum DP-SGD clipping norm')
+    parser.add_argument('--dp_clip_max', type=float, default=100.0, help='maximum DP-SGD clipping norm')
     parser.add_argument('--dp_mode', choices=['local', 'server', 'off'], default='server')
     parser.add_argument('--dp_accountant', choices=['rdp', 'prv'], default='rdp',
                         help='DP accountant to estimate the privacy budget')
@@ -1024,9 +1024,10 @@ if __name__ == '__main__':
                 )
             if args.dp_mode == 'server' and getattr(args, 'client_grad_norms', None):
                 new_clip = float(np.percentile(list(args.client_grad_norms.values()), 90))
-                args.dp_clip = min(new_clip, args.dp_clip_max)
-                print(f'Adjusted DP clip: {args.dp_clip:.4f}')
-                logger.info('Adjusted DP clip to %.4f', args.dp_clip)
+                adjusted_clip = min(new_clip, args.dp_clip_max)
+                args.dp_clip = 0.9 * args.dp_clip + 0.1 * adjusted_clip
+                print(f'New clip: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}')
+                logger.info('New clip %.4f, DP clip %.4f', new_clip, args.dp_clip)
             if args.dp_mode == 'server':
                 noise_multipliers = {name: args.dp_noise for name in global_w}
                 for name in noise_multipliers:
