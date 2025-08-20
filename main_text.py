@@ -708,9 +708,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     indices_all_clients = []
     epsilon = None
     deltas = {}
-    if args.dp_mode == 'server' and not hasattr(args, 'client_grad_norms'):
-        args.client_grad_norms = {}
-    grad_ma_decay = 0.9
 
     for net_id, net in nets.items():
         print(net_id)
@@ -731,12 +728,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
             testacc = result
             if args.dp_mode == 'server':
                 new_params = net.state_dict()
-                delta = {k: new_params[k] - prev_params[k] for k in new_params}
-                deltas[net_id] = delta
-                flat = torch.cat([v.view(-1) for v in delta.values()])
-                norm = torch.norm(flat).item()
-                prev = args.client_grad_norms.get(net_id, norm)
-                args.client_grad_norms[net_id] = grad_ma_decay * prev + (1 - grad_ma_decay) * norm
+                deltas[net_id] = {k: new_params[k] - prev_params[k] for k in new_params}
         else:
             net.train()
             result, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
@@ -995,8 +987,7 @@ if __name__ == '__main__':
                     accountant=args.dp_accountant,
                     sampling_rate=len(participating_ids) / args.n_parties,
                 )
-            if args.dp_mode == 'server' and getattr(args, 'client_grad_norms', None):
-                args.dp_clip = float(np.percentile(list(args.client_grad_norms.values()), 90))
+
             if args.dp_mode == 'server':
                 noise_multipliers = {name: args.dp_noise for name in global_w}
                 for name in noise_multipliers:
