@@ -352,6 +352,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     for name, _ in dp_named_params:
         args.grad_norms_ma.setdefault(name, 0.0)
     grad_ma_decay = 0.9
+    max_norm = 5.0
     tl_optimizer = None
     if tl_params:
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
@@ -561,6 +562,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         loss_all += contras_loss / Q * 0.1
                     loss_all += loss_ce(out_all, y_total)
                     loss_all.backward()
+                    grad_norm = torch.nn.utils.clip_grad_norm_(gmodel.parameters(), max_norm)
+                    loss_value = loss_all.item()
+                    print(f'batch loss: {loss_value:.4f}, grad_norm: {grad_norm:.4f}')
+                    if torch.isnan(torch.tensor(grad_norm)) or torch.isnan(loss_all.detach()):
+                        print('warning: NaN detected in loss or gradients')
                     if args.dp_mode == 'local':
                         for name, param in dp_named_params:
                             if param.grad is None:
@@ -611,10 +617,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     base_model.load_state_dict(gmodel_base.state_dict())
                     ##################################
                     del net_new, X_out_query, out
-    
-                if np.random.rand() < 0.005:
-                    print('loss: {:.4f}'.format(loss_all.item()))
-    
     
                 acc_train = (torch.argmax(out_all, -1) == y_total).float().mean().item()
     
