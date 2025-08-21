@@ -689,7 +689,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             result = (np.mean(accs), torch.cat(max_values, 0), torch.cat(indices, 0))
 
         if args.dp_mode == 'local' and args.grad_norms_ma:
-            args.dp_clip = float(np.percentile(list(args.grad_norms_ma.values()), 90))
+            new_clip = float(np.percentile(list(args.grad_norms_ma.values()), 90))
+            args.dp_clip = new_clip
+            print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}')
+            logger.info('90th percentile %.4f, DP clip %.4f', new_clip, args.dp_clip)
         if np.random.rand() < 0.3:
             print('Meta-test_Accuracy: {:.4f}'.format(np.mean(accs)))
         #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
@@ -741,7 +744,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 delta = {
                     k: new_params[k] - prev_params[k]
                     for k in new_params
-                    if 'few_classify' not in k
+                    if 'few_classify' not in k and 'transform_layer' not in k
                 }
                 deltas[net_id] = delta
                 flat = torch.cat([
@@ -754,6 +757,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                             'running_var',
                             'num_batches_tracked',
                             'few_classify',
+                            'transform_layer',
                         )
                     )
                 ])
@@ -830,12 +834,13 @@ def aggregate_deltas(
                     'running_var',
                     'num_batches_tracked',
                     'few_classify',
+                    'transform_layer',
                 )
             )
         ])
         norm = torch.norm(flat)
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
-        clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k})
+        clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
     base_noise_std = args.dp_noise * args.dp_clip / num_clients
     logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
@@ -1060,8 +1065,8 @@ if __name__ == '__main__':
                 new_clip = float(np.percentile(list(args.client_grad_norms.values()), 90))
                 adjusted_clip = min(new_clip, args.dp_clip_max)
                 args.dp_clip = 0.9 * args.dp_clip + 0.1 * adjusted_clip
-                print(f'New clip: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}')
-                logger.info('New clip %.4f, DP clip %.4f', new_clip, args.dp_clip)
+                print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}')
+                logger.info('90th percentile %.4f, DP clip %.4f', new_clip, args.dp_clip)
             if args.dp_mode == 'server':
                 noise_multipliers = {name: args.dp_noise for name in global_w}
                 for name in noise_multipliers:
