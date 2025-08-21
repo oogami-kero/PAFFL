@@ -747,12 +747,24 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
             testacc = result
             if args.dp_mode == 'server':
                 new_params = net.state_dict()
-                delta = {k: new_params[k] - prev_params[k] for k in new_params}
+                delta = {
+                    k: new_params[k] - prev_params[k]
+                    for k in new_params
+                    if 'few_classify' not in k
+                }
                 deltas[net_id] = delta
                 flat = torch.cat([
                     v.view(-1)
                     for k, v in delta.items()
-                    if not any(s in k for s in ('running_mean', 'running_var', 'num_batches_tracked'))
+                    if not any(
+                        s in k
+                        for s in (
+                            'running_mean',
+                            'running_var',
+                            'num_batches_tracked',
+                            'few_classify',
+                        )
+                    )
                 ])
                 norm = torch.norm(flat).item()
                 prev = args.client_grad_norms.get(net_id, norm)
@@ -813,15 +825,25 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         flat = torch.cat([
             v.view(-1)
             for k, v in delta.items()
-            if not any(s in k for s in ('running_mean', 'running_var', 'num_batches_tracked'))
+            if not any(
+                s in k
+                for s in (
+                    'running_mean',
+                    'running_var',
+                    'num_batches_tracked',
+                    'few_classify',
+                )
+            )
         ])
         norm = torch.norm(flat)
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
-        clipped.append({k: v * scale for k, v in delta.items()})
+        clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k})
     num_clients = len(clipped) or 1
     base_noise_std = args.dp_noise * args.dp_clip / num_clients
     logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
     for key in global_w:
+        if 'few_classify' in key:
+            continue
         if any(s in key for s in ('running_mean', 'running_var', 'num_batches_tracked')):
             global_w[key] += torch.stack([d[key] for d in deltas.values()]).mean(0)
             if reset_bn:
