@@ -197,8 +197,9 @@ def get_args():
     parser.add_argument('--use_dp', type=int, default=0, help='enable DP-SGD')
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
+    parser.add_argument('--dp_noise_scale', type=float, default=0.1, help='additional scaling for DP noise')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
-    parser.add_argument('--dp_clip_max', type=float, default=100.0, help='maximum DP-SGD clipping norm')
+    parser.add_argument('--dp_clip_max', type=float, default=2.0, help='maximum DP-SGD clipping norm')
     parser.add_argument('--dp_mode', choices=['local', 'server', 'off'], default='server')
     parser.add_argument('--dp_accountant', choices=['rdp', 'prv'], default='rdp',
                         help='DP accountant to estimate the privacy budget')
@@ -384,10 +385,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     loss_mse = nn.MSELoss()
     result = None
     epsilon = None
+    last_loss = None
     try:
 
         def train_epoch(epoch, mode='train'):
-            nonlocal dp_optimizer, head_optimizer, tl_optimizer, gmodel, base_model
+            nonlocal dp_optimizer, head_optimizer, tl_optimizer, gmodel, base_model, last_loss
     
             if mode == 'train':
                 N, K, Q = get_n_k_q(args, mode='train', fewrel_multiplier=3)
@@ -563,8 +565,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     loss_all += loss_ce(out_all, y_total)
                     loss_all.backward()
                     grad_norm = torch.nn.utils.clip_grad_norm_(gmodel.parameters(), max_norm)
-                    loss_value = loss_all.item()
-                    print(f'batch loss: {loss_value:.4f}, grad_norm: {grad_norm:.4f}')
+                    last_loss = loss_all.item()
+                    print(f'batch loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
                     if torch.isnan(torch.tensor(grad_norm)) or torch.isnan(loss_all.detach()):
                         print('warning: NaN detected in loss or gradients')
                     if args.dp_mode == 'local':
@@ -717,7 +719,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 gmodel.train()
             gmodel = remove_dp_hooks(gmodel)
         base_model.train()
-    return result, epsilon
+    return result, epsilon, last_loss
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
     avg_acc = 0.0
     acc_list = []
@@ -728,6 +730,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     if args.dp_mode == 'server' and not hasattr(args, 'client_grad_norms'):
         args.client_grad_norms = {}
     grad_ma_decay = 0.9
+    losses = []
 
     for net_id, net in nets.items():
         print(net_id)
@@ -743,11 +746,12 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
         if test_only is False:
             prev_params = copy.deepcopy(net.state_dict())
             net.train()
-            result, epsilon = train_net_few_shot_new(
+            result, epsilon, loss_value = train_net_few_shot_new(
                 net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                 device=device, test_only=False
             )
             testacc = result
+            losses.append(loss_value)
             if args.dp_mode == 'server':
                 new_params = net.state_dict()
                 delta = {
@@ -775,7 +779,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 args.client_grad_norms[net_id] = grad_ma_decay * prev + (1 - grad_ma_decay) * norm
         else:
             net.train()
-            result, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+            result, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device=device, test_only=True, test_only_k=test_only_k)
             testacc, max_values, indices = result
             max_value_all_clients.append(max_values)
@@ -795,6 +799,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
     logger.info(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
     print(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
+    avg_loss = float(np.mean(losses)) if losses else 0.0
 
     if test_only:
         max_value_all_clients = torch.stack(max_value_all_clients, 0)
@@ -807,8 +812,8 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
         logger.info('std acc %f' % np.std(acc_list))
 
     if args.dp_mode == 'server':
-        return deltas, epsilon
-    return nets, epsilon
+        return deltas, epsilon, avg_loss
+    return nets, epsilon, avg_loss
 
 
 def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=False):
@@ -844,7 +849,7 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
         clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
-    base_noise_std = args.dp_noise * args.dp_clip / num_clients
+    base_noise_std = args.dp_noise * args.dp_noise_scale * args.dp_clip / num_clients
     logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
     for key in global_w:
         if 'few_classify' in key:
@@ -864,7 +869,13 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         noise_mult = args.dp_noise
         if noise_multipliers is not None:
             noise_mult = noise_multipliers.get(key, args.dp_noise)
-        noise = torch.randn_like(avg_update) * noise_mult * args.dp_clip / num_clients
+        noise = (
+            torch.randn_like(avg_update)
+            * noise_mult
+            * args.dp_noise_scale
+            * args.dp_clip
+            / num_clients
+        )
         global_w[key] += avg_update + noise
 
 
@@ -1050,10 +1061,16 @@ if __name__ == '__main__':
                         '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
 
             if args.dp_mode == 'server':
-                deltas, _ = local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+                deltas, _, round_loss = local_train_net_few_shot(
+                    nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
+                )
             else:
-                local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+                _, _, round_loss = local_train_net_few_shot(
+                    nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
+                )
 
+            logger.info('Round %d loss %.4f', round, round_loss)
+            print(f'Round {round} loss: {round_loss:.4f}')
             if args.dp_mode == 'local':
                 dp_steps += args.num_train_tasks * len(participating_ids)
             elif args.dp_mode == 'server':
