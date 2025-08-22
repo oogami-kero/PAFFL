@@ -199,13 +199,14 @@ def get_args():
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     parser.add_argument('--dp_noise_scale', type=float, default=0.1, help='additional scaling for DP noise')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
-    parser.add_argument('--dp_clip_max', type=float, default=2.0, help='maximum DP-SGD clipping norm')
+    parser.add_argument('--dp_clip_max', type=float, default=20.0, help='maximum DP-SGD clipping norm')
     parser.add_argument('--dp_mode', choices=['local', 'server', 'off'], default='server')
     parser.add_argument('--dp_accountant', choices=['rdp', 'prv'], default='rdp',
                         help='DP accountant to estimate the privacy budget')
     parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
     args = parser.parse_args()
     args.use_dp = int(args.dp_mode != 'off')
+    args.dp_clip = min(args.dp_clip, args.dp_clip_max)
     return args
 
 
@@ -699,7 +700,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
         if args.dp_mode == 'local' and args.grad_norms_ma:
             new_clip = float(np.percentile(list(args.grad_norms_ma.values()), 90))
-            args.dp_clip = new_clip
+            args.dp_clip = min(new_clip, args.dp_clip_max)
             print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}')
             logger.info('90th percentile %.4f, DP clip %.4f', new_clip, args.dp_clip)
         if np.random.rand() < 0.3:
