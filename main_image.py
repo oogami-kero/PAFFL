@@ -194,7 +194,6 @@ def get_args():
                         help='minimum accuracy improvement to reset patience')
     parser.add_argument('--use_transform_layer', type=int, default=0,
                         help='enable personalized transformation layer')
-    parser.add_argument('--use_dp', type=int, default=0, help='enable DP-SGD')
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     parser.add_argument('--dp_noise_scale', type=float, default=0.1, help='additional scaling for DP noise')
@@ -205,7 +204,6 @@ def get_args():
                         help='DP accountant to estimate the privacy budget')
     parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
     args = parser.parse_args()
-    args.use_dp = int(args.dp_mode != 'off')
     args.dp_clip = min(args.dp_clip, args.dp_clip_max)
     return args
 

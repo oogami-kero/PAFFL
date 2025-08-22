@@ -975,7 +975,7 @@ class ModelFed_Adp(nn.Module):
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4, batch_first=True)
         transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
-        if getattr(args, 'use_dp', 0):
+        if getattr(args, 'dp_mode', 'off') != 'off':
             self.transformer = ModuleValidator.fix(transformer)
             ModuleValidator.validate(self.transformer, strict=True)
         else:
@@ -1098,7 +1098,7 @@ class LSTMAtt(nn.Module):
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.ebd_dim, nhead=4, batch_first=True)
         transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
-        if getattr(args, 'use_dp', 0):
+        if getattr(args, 'dp_mode', 'off') != 'off':
             self.transformer = ModuleValidator.fix(transformer)
             ModuleValidator.validate(self.transformer, strict=True)
         else:
