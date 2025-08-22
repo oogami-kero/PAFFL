@@ -776,6 +776,8 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                     )
                 ])
                 norm = torch.norm(flat).item()
+                scale = min(1.0, args.dp_clip / (norm + 1e-12))
+                logging.info('Client %s norm %.4f scale %.4f', net_id, norm, scale)
                 prev = args.client_grad_norms.get(net_id, norm)
                 args.client_grad_norms[net_id] = grad_ma_decay * prev + (1 - grad_ma_decay) * norm
         else:
@@ -831,7 +833,8 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         reset_bn (bool, optional): Reset BatchNorm statistics after aggregation.
     """
     clipped = []
-    for delta in deltas.values():
+    scales = []
+    for cid, delta in deltas.items():
         flat = torch.cat([
             v.view(-1)
             for k, v in delta.items()
@@ -846,10 +849,14 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
                 )
             )
         ])
-        norm = torch.norm(flat)
+        norm = torch.norm(flat).item()
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
+        logging.info('Client %s norm %.4f scale %.4f', cid, norm, scale)
+        scales.append(scale)
         clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
+    if scales:
+        logging.info('Clipping scale stats - mean: %.4f max: %.4f', float(np.mean(scales)), float(np.max(scales)))
     base_noise_std = args.dp_noise * args.dp_noise_scale * args.dp_clip / num_clients
     logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
     for key in global_w:
