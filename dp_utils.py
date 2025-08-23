@@ -53,11 +53,18 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
     accountant : str, optional
         If ``'rdp'`` an approximate R\u00E9nyi DP accountant is used for composition.
         If ``'prv'`` a privacy random variable accountant from ``prv_accountant``
-        computes ε via a PLD representation. Any other value falls back to a
-        basic strong composition bound.
+        computes ε via a PLD representation. The accountant's
+        ``compute_epsilon`` may return a scalar or a tuple ``(lower, estimate,
+        upper)``; the estimate is used. Any other value falls back to a basic
+        strong composition bound.
     sampling_rate : float, optional
         Probability that a given client participates in a round. Only used when
         ``accountant`` is ``'rdp'`` or ``'prv'``.
+
+    Returns
+    -------
+    float
+        Estimated privacy loss ε.
     """
     if noise_mult == 0:
         return float('inf')
@@ -80,7 +87,8 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
             max_compositions=num_steps,
             eps_error=0.1,
         )
-        return accountant.compute_epsilon(num_steps)[2]
+        eps = accountant.compute_epsilon(num_steps)
+        return eps if isinstance(eps, float) else eps[1]
 
     return math.sqrt(2 * num_steps * math.log(1 / delta)) / noise_mult
 
