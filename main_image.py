@@ -118,6 +118,8 @@ def get_args():
     parser.add_argument('--net_config', type=lambda x: list(map(int, x.split(', '))))
     parser.add_argument('--partition', type=str, default='noniid', help='the data partitioning strategy')
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate (default: 0.01, 0.0005, 0.005)')
+    parser.add_argument('--lr_schedule', type=str, default=None, help='learning rate schedule to use')
+    parser.add_argument('--lr_decay', type=float, default=0.0, help='final learning rate fraction for schedulers')
     parser.add_argument('--epochs', type=int, default=10, help='number of local epochs')
     parser.add_argument('--n_parties', type=int, default=10, help='number of workers in a distributed cluster')
     parser.add_argument('--alg', type=str, default='fedavg',
@@ -344,6 +346,15 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         )
         dp_optimizer.sample_rate = sample_rate
         dp_optimizer.expected_batch_size = total_batch
+    dp_scheduler = None
+    head_scheduler = None
+    if args.lr_schedule == 'cosine':
+        dp_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            dp_optimizer, T_max=n_epoch, eta_min=lr * args.lr_decay
+        )
+        head_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            head_optimizer, T_max=n_epoch, eta_min=lr * args.lr_decay
+        )
     dp_named_params = [
         (n, p) for n, p in gmodel.named_parameters()
         if 'transform_layer' not in n and 'few_classify' not in n and 'transformer' not in n and p.requires_grad
@@ -389,7 +400,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     try:
 
         def train_epoch(epoch, mode='train'):
-            nonlocal dp_optimizer, head_optimizer, tl_optimizer, gmodel, base_model, last_loss
+            nonlocal dp_optimizer, head_optimizer, dp_scheduler, head_scheduler, tl_optimizer, gmodel, base_model, last_loss
     
             if mode == 'train':
                 N, K, Q = get_n_k_q(args, mode='train', fewrel_multiplier=3)
@@ -621,13 +632,17 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     del net_new, X_out_query, out
     
                 acc_train = (torch.argmax(out_all, -1) == y_total).float().mean().item()
-    
+
                 del X_out_all,  out_all
+                if dp_scheduler is not None:
+                    dp_scheduler.step()
+                if head_scheduler is not None:
+                    head_scheduler.step()
                 return acc_train
     
             else:
-                use_logistic=True
-    
+                use_logistic = True
+
                 if use_logistic:
                     with torch.no_grad():
                         X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0))
@@ -644,25 +659,19 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                     acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
                     max_value, index = torch.max(out, -1)
-
-                    if test_only:
-                        return acc_train, max_value, index
-                    else:
-                        return acc_train
-    
                 else:
-    
                     acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
                     with torch.no_grad():
-                        max_value, index=torch.max(out,-1)
-    
-    
-    
-                    del net_new, X_out_sup, X_out_query, out,net_para, param_require_grad, grad, X_total_query, X_total_sup
-                    if test_only:
-                        return acc_train, max_value, index
-                    else:
-                        return acc_train
+                        max_value, index = torch.max(out, -1)
+
+                    del net_new, X_out_sup, X_out_query, out, net_para, param_require_grad, grad, X_total_query, X_total_sup
+
+                result_val = (acc_train, max_value, index) if test_only else acc_train
+                if dp_scheduler is not None:
+                    dp_scheduler.step()
+                if head_scheduler is not None:
+                    head_scheduler.step()
+                return result_val
         
         if not test_only:
             best_acc = 0
