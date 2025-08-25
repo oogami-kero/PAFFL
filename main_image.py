@@ -406,7 +406,15 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
         def train_epoch(epoch, mode='train'):
             nonlocal dp_optimizer, head_optimizer, dp_scheduler, head_scheduler, tl_optimizer, gmodel, base_model, last_loss
-    
+
+            def _has_grads(optimizer):
+                """Return True if any parameter of optimizer has a gradient."""
+                for group in optimizer.param_groups:
+                    for param in group['params']:
+                        if param.grad is not None:
+                            return True
+                return False
+
             if mode == 'train':
                 N, K, Q = get_n_k_q(args, mode='train', fewrel_multiplier=3)
                 gmodel.train()
@@ -582,9 +590,14 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                 if use_amp:
                     scaler.scale(loss_all).backward()
-                    scaler.unscale_(dp_optimizer)
-                    scaler.unscale_(head_optimizer)
-                    if tl_optimizer is not None:
+                    dp_has_grad = _has_grads(dp_optimizer)
+                    head_has_grad = _has_grads(head_optimizer)
+                    tl_has_grad = tl_optimizer is not None and _has_grads(tl_optimizer)
+                    if dp_has_grad:
+                        scaler.unscale_(dp_optimizer)
+                    if head_has_grad:
+                        scaler.unscale_(head_optimizer)
+                    if tl_has_grad:
                         scaler.unscale_(tl_optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(gmodel.parameters(), max_norm)
                     last_loss = loss_all.item()
@@ -598,9 +611,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             grad_norm = param.grad.detach().norm(2).item()
                             prev = args.grad_norms_ma.get(name, grad_norm)
                             args.grad_norms_ma[name] = grad_ma_decay * prev + (1 - grad_ma_decay) * grad_norm
-                    scaler.step(dp_optimizer)
-                    scaler.step(head_optimizer)
-                    if tl_optimizer is not None:
+                    if dp_has_grad:
+                        scaler.step(dp_optimizer)
+                    if head_has_grad:
+                        scaler.step(head_optimizer)
+                    if tl_has_grad:
                         scaler.step(tl_optimizer)
                     scaler.update()
                 else:
