@@ -532,7 +532,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                     for j in range(args.fine_tune_steps):
                         net_new.zero_grad()
-                        with autocast(device_type='cuda', enabled=use_amp):
+                        with autocast(enabled=use_amp):
                             X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
                             losses = F.cross_entropy(out, support_labels, reduction='none')
                         losses.mean().backward()
@@ -546,7 +546,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                                     continue
                                 param.data.add_(-args.fine_tune_lr * param.grad)
 
-                    with autocast(device_type='cuda', enabled=use_amp):
+                    with autocast(enabled=use_amp):
                         X_out_query, _, out = net_new(X_total_query)
                         X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
 
@@ -617,7 +617,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     if isinstance(gmodel, GradSampleModule):
                         gmodel.disable_hooks()
                     with torch.no_grad():
-                        with autocast(device_type='cuda', enabled=use_amp):
+                        with autocast(enabled=use_amp):
                             X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
                     if isinstance(gmodel, GradSampleModule):
                         gmodel.enable_hooks()
@@ -661,7 +661,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     
                 if use_logistic:
                     with torch.no_grad():
-                        with autocast(device_type='cuda', enabled=use_amp):
+                        with autocast(enabled=use_amp):
                             X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0))
                         X_out_sup = X_out_all[:N * K]
                         X_out_query = X_out_all[N * K:]
