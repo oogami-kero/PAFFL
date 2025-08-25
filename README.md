@@ -69,6 +69,7 @@ When `--print_eps 1`, the current ε and δ are printed after each round.
     ```
   This applies a cosine schedule that anneals the learning rate for both DP and head optimizers to 10% of its initial value.
 * Select DP-compatible optimizers via `--optimizer`. In addition to `sgd`, `adam`, and `amsgrad`, `adamw` is supported and becomes DP-AdamW when differential privacy is enabled.
+* Enable mixed precision with `--use_amp` on CUDA devices to speed up training and reduce memory use. Gradients are scaled with `GradScaler` and unscaled before clipping so differential privacy remains intact.
 * Training can stop early when global accuracy plateaus. Set `--convergence_patience` and `--convergence_delta` to monitor convergence and exit before reaching the full `--comm_round`.
 
 ### Choosing a noise multiplier for a target ε
