@@ -188,6 +188,7 @@ def get_args():
     parser.add_argument('--save_model',type=int,default=0)
     parser.add_argument('--use_project_head', type=int, default=1)
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
+    parser.add_argument('--server_lr', type=float, default=1.0, help='the server learning rate (FedAvgM)')
     parser.add_argument('--convergence_patience', type=int, default=0,
                         help='stop if accuracy does not improve after this many rounds (0 to disable)')
     parser.add_argument('--convergence_delta', type=float, default=0.0,
@@ -1124,7 +1125,7 @@ if __name__ == '__main__':
                 for key in delta_w:
                     delta_w[key] = old_w[key] - global_w[key]
                     moment_v[key] = args.server_momentum * moment_v[key] + (1-args.server_momentum) * delta_w[key]
-                    global_w[key] = old_w[key] - moment_v[key]
+                    global_w[key] = old_w[key] - args.server_lr * moment_v[key]
 
             global_model.load_state_dict(global_w)
 

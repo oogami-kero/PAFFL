@@ -56,10 +56,12 @@ python main_image.py --dataset miniImageNet --dp_mode local --dp_noise 0.2
 python main_image.py --dataset miniImageNet --dp_mode server --dp_noise 0.2
 # No DP
 python main_image.py --dataset miniImageNet --dp_mode off
+# FedAvgM with server learning rate
+python main_image.py --dataset miniImageNet --server_momentum 0.9 --server_lr 0.1
 ```
 When `--print_eps 1`, the current ε and δ are printed after each round.
 
-* Enable server momentum with `--server_momentum <m>` to use FedAvgM for faster convergence.
+* Enable server momentum with `--server_momentum <m>` and set the server learning rate with `--server_lr <lr>` to use FedAvgM for faster convergence. A good starting point is `lr ≈ 1 - m`.
 * Select DP-compatible optimizers via `--optimizer`. In addition to `sgd`, `adam`, and `amsgrad`, `adamw` is supported and becomes DP-AdamW when differential privacy is enabled.
 * Training can stop early when global accuracy plateaus. Set `--convergence_patience` and `--convergence_delta` to monitor convergence and exit before reaching the full `--comm_round`.
 
