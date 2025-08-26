@@ -11,6 +11,7 @@ import copy
 import datetime
 import random
 import time
+import math
 
 from PIL import Image
 
@@ -1087,10 +1088,6 @@ if __name__ == '__main__':
             #logger.info("in comm round:" + str(round))
             party_list_this_round = party_list_rounds[round]
 
-            if args.dp_mode == 'server' and getattr(args, 'last_clip_fraction', None) is not None:
-                if args.last_clip_fraction < args.dp_target_clip_fraction:
-                    args.dp_clip *= 0.9
-
             global_w = global_model.state_dict()
             if args.server_momentum:
                 old_w = copy.deepcopy(global_model.state_dict())
@@ -1157,9 +1154,14 @@ if __name__ == '__main__':
                 )
             if args.dp_mode == 'server' and getattr(args, 'client_grad_norms', None):
                 new_clip = float(np.percentile(list(args.client_grad_norms.values()), 90))
-                adjusted_clip = min(new_clip, args.dp_clip_max)
-                lower, upper = 0.8 * adjusted_clip, adjusted_clip
-                args.dp_clip = max(lower, min(args.dp_clip, upper))
+                clipped_clip = max(1.0, min(new_clip, args.dp_clip_max))
+                if not hasattr(args, 'log_dp_clip'):
+                    args.log_dp_clip = math.log(max(1.0, args.dp_clip))
+                eta = 0.4
+                args.log_dp_clip += eta * (math.log(clipped_clip) - args.log_dp_clip)
+                args.dp_clip = float(math.exp(args.log_dp_clip))
+                args.dp_clip = max(1.0, min(args.dp_clip, args.dp_clip_max))
+
                 num_clients = len(deltas) or 1
                 z = args.dp_noise * args.dp_noise_scale / num_clients
                 print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
