@@ -203,6 +203,8 @@ def get_args():
     parser.add_argument('--dp_noise_scale', type=float, default=0.1, help='additional scaling for DP noise')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
     parser.add_argument('--dp_clip_max', type=float, default=20.0, help='maximum DP-SGD clipping norm')
+    parser.add_argument('--dp_target_clip_fraction', type=float, default=0.1,
+                        help='target fraction of clients to be clipped')
     parser.add_argument('--dp_mode', choices=['local', 'server', 'off'], default='server')
     parser.add_argument('--dp_accountant', choices=['rdp', 'prv'], default='rdp',
                         help='DP accountant to estimate the privacy budget')
@@ -878,7 +880,9 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
     """Aggregate client deltas with clipping and layer-specific noise.
 
     Noise is scaled by the number of participating clients to maintain the
-    expected privacy budget regardless of the number of contributions.
+    expected privacy budget regardless of the number of contributions. The
+    fraction of client updates that were clipped is stored in
+    ``args.last_clip_fraction`` for adaptive clipping strategies.
 
     Args:
         global_w (dict): Global model weights to be updated.
@@ -910,6 +914,8 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         scales.append(scale)
         clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
+    args.last_clip_fraction = float(np.mean([s < 1.0 for s in scales])) if scales else 0.0
+    logging.info('Clipped fraction: %.4f', args.last_clip_fraction)
     if scales:
         logging.info('Clipping scale stats - mean: %.4f max: %.4f', float(np.mean(scales)), float(np.max(scales)))
     base_noise_std = args.dp_noise * args.dp_noise_scale * args.dp_clip / num_clients
@@ -1082,6 +1088,12 @@ if __name__ == '__main__':
             #logger.info("in comm round:" + str(round))
             party_list_this_round = party_list_rounds[round]
 
+            if args.dp_mode == 'server' and getattr(args, 'last_clip_fraction', None) is not None:
+                if args.last_clip_fraction < args.dp_target_clip_fraction:
+                    old_clip = args.dp_clip
+                    args.dp_clip *= 0.9
+                    args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
+
             global_w = global_model.state_dict()
             if args.server_momentum:
                 old_w = copy.deepcopy(global_model.state_dict())
@@ -1150,8 +1162,10 @@ if __name__ == '__main__':
                 old_clip = args.dp_clip
                 new_clip = float(np.percentile(list(args.client_grad_norms.values()), 90))
                 adjusted_clip = min(new_clip, args.dp_clip_max)
-                args.dp_clip = 0.9 * args.dp_clip + 0.1 * adjusted_clip
-                args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
+                lower, upper = 0.8 * adjusted_clip, adjusted_clip
+                args.dp_clip = max(lower, min(args.dp_clip, upper))
+                if args.dp_clip != old_clip:
+                    args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
                 z = args.dp_noise / args.dp_clip
                 print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
                 logger.info('90th percentile %.4f, DP clip %.4f, z %.4f', new_clip, args.dp_clip, z)

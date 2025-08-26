@@ -46,6 +46,7 @@ The repository now includes optional support for a **personalised transformation
   * `--dp_noise`: noise multiplier
   * `--dp_delta`: target delta for privacy accounting (default `1e-5`)
   * `--print_eps`: output the current ε after each communication round when set to `1`
+  * `--dp_target_clip_fraction`: desired fraction of client updates to clip (default `0.1`)
 
 Examples:
 
