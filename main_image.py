@@ -918,7 +918,7 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
     logging.info('Clipped fraction: %.4f', args.last_clip_fraction)
     if scales:
         logging.info('Clipping scale stats - mean: %.4f max: %.4f', float(np.mean(scales)), float(np.max(scales)))
-    base_noise_std = args.dp_noise * args.dp_noise_scale * args.dp_clip / num_clients
+    base_noise_std = args.dp_noise * args.dp_noise_scale / num_clients
     logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
     for key in global_w:
         if 'few_classify' in key:
@@ -942,7 +942,6 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
             torch.randn_like(avg_update)
             * noise_mult
             * args.dp_noise_scale
-            * args.dp_clip
             / num_clients
         )
         global_w[key] += avg_update + noise
@@ -1090,9 +1089,7 @@ if __name__ == '__main__':
 
             if args.dp_mode == 'server' and getattr(args, 'last_clip_fraction', None) is not None:
                 if args.last_clip_fraction < args.dp_target_clip_fraction:
-                    old_clip = args.dp_clip
                     args.dp_clip *= 0.9
-                    args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
 
             global_w = global_model.state_dict()
             if args.server_momentum:
@@ -1159,13 +1156,10 @@ if __name__ == '__main__':
                     sampling_rate=len(participating_ids) / args.n_parties,
                 )
             if args.dp_mode == 'server' and getattr(args, 'client_grad_norms', None):
-                old_clip = args.dp_clip
                 new_clip = float(np.percentile(list(args.client_grad_norms.values()), 90))
                 adjusted_clip = min(new_clip, args.dp_clip_max)
                 lower, upper = 0.8 * adjusted_clip, adjusted_clip
                 args.dp_clip = max(lower, min(args.dp_clip, upper))
-                if args.dp_clip != old_clip:
-                    args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
                 z = args.dp_noise / args.dp_clip
                 print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
                 logger.info('90th percentile %.4f, DP clip %.4f, z %.4f', new_clip, args.dp_clip, z)
