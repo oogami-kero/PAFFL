@@ -1128,8 +1128,10 @@ if __name__ == '__main__':
                 adjusted_clip = min(new_clip, args.dp_clip_max)
                 lower, upper = 0.8 * adjusted_clip, adjusted_clip
                 args.dp_clip = max(lower, min(args.dp_clip, upper))
-                print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}')
-                logger.info('90th percentile %.4f, DP clip %.4f', new_clip, args.dp_clip)
+                num_clients = len(deltas) or 1
+                z = args.dp_noise * args.dp_noise_scale / num_clients
+                print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
+                logger.info('90th percentile %.4f, DP clip %.4f, z %.4f', new_clip, args.dp_clip, z)
             if args.dp_mode == 'server':
                 noise_multipliers = {name: args.dp_noise for name in global_w}
                 for name in noise_multipliers:
