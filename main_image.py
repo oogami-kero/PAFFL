@@ -1147,11 +1147,14 @@ if __name__ == '__main__':
                     sampling_rate=len(participating_ids) / args.n_parties,
                 )
             if args.dp_mode == 'server' and getattr(args, 'client_grad_norms', None):
+                old_clip = args.dp_clip
                 new_clip = float(np.percentile(list(args.client_grad_norms.values()), 90))
                 adjusted_clip = min(new_clip, args.dp_clip_max)
                 args.dp_clip = 0.9 * args.dp_clip + 0.1 * adjusted_clip
-                print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}')
-                logger.info('90th percentile %.4f, DP clip %.4f', new_clip, args.dp_clip)
+                args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
+                z = args.dp_noise / args.dp_clip
+                print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
+                logger.info('90th percentile %.4f, DP clip %.4f, z %.4f', new_clip, args.dp_clip, z)
             if args.dp_mode == 'server':
                 noise_multipliers = {name: args.dp_noise for name in global_w}
                 for name in noise_multipliers:

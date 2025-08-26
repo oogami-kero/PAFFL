@@ -93,6 +93,29 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
     return math.sqrt(2 * num_steps * math.log(1 / delta)) / noise_mult
 
 
+def scale_noise_to_clip(noise_mult, old_clip, new_clip):
+    """Return a noise multiplier keeping the noise-to-clip ratio fixed.
+
+    Parameters
+    ----------
+    noise_mult : float
+        Current noise multiplier.
+    old_clip : float
+        Previous clipping bound.
+    new_clip : float
+        Updated clipping bound.
+
+    Returns
+    -------
+    float
+        Noise multiplier rescaled so that ``noise_mult / old_clip`` equals
+        ``new_noise / new_clip``.
+    """
+    if old_clip == 0:
+        raise ValueError('old_clip must be non-zero')
+    return (noise_mult / old_clip) * new_clip
+
+
 def find_noise_multiplier(
     num_steps,
     target_eps,
