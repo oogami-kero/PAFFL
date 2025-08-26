@@ -1144,15 +1144,8 @@ if __name__ == '__main__':
                 dp_steps += args.num_train_tasks * len(participating_ids)
             elif args.dp_mode == 'server':
                 dp_steps += 1
-            if args.dp_mode != 'off':
-                epsilon = dp_utils.compute_epsilon(
-                    dp_steps,
-                    args.dp_noise,
-                    args.dp_delta,
-                    accountant=args.dp_accountant,
-                    sampling_rate=len(participating_ids) / args.n_parties,
-                )
             if args.dp_mode == 'server' and getattr(args, 'client_grad_norms', None):
+                old_clip, old_noise = args.dp_clip, args.dp_noise
                 new_clip = float(np.percentile(list(args.client_grad_norms.values()), 90))
                 clipped_clip = max(1.0, min(new_clip, args.dp_clip_max))
                 if not hasattr(args, 'log_dp_clip'):
@@ -1161,11 +1154,20 @@ if __name__ == '__main__':
                 args.log_dp_clip += eta * (math.log(clipped_clip) - args.log_dp_clip)
                 args.dp_clip = float(math.exp(args.log_dp_clip))
                 args.dp_clip = max(1.0, min(args.dp_clip, args.dp_clip_max))
-
+                args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
                 num_clients = len(deltas) or 1
-                z = args.dp_noise * args.dp_noise_scale / num_clients
+                noise_std = args.dp_noise * args.dp_noise_scale / num_clients
+                z = noise_std / args.dp_clip
                 print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
                 logger.info('90th percentile %.4f, DP clip %.4f, z %.4f', new_clip, args.dp_clip, z)
+            if args.dp_mode != 'off':
+                epsilon = dp_utils.compute_epsilon(
+                    dp_steps,
+                    args.dp_noise,
+                    args.dp_delta,
+                    accountant=args.dp_accountant,
+                    sampling_rate=len(participating_ids) / args.n_parties,
+                )
             if args.dp_mode == 'server':
                 noise_multipliers = {name: args.dp_noise for name in global_w}
                 for name in noise_multipliers:
