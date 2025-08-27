@@ -168,7 +168,7 @@ def get_args():
     parser.add_argument('--device', type=str, default='cuda:0', help='The device to run the program')
     parser.add_argument('--log_file_name', type=str, default=None, help='The log file name')
 
-    parser.add_argument('--mu', type=float, default=0.0, help='FedProx proximal term coefficient')
+    parser.add_argument('--mu', type=float, default=1, help='the mu parameter for fedprox or moon')
     parser.add_argument('--out_dim', type=int, default=256, help='the output dimension for the projection layer')
     parser.add_argument('--temperature', type=float, default=0.5,
                         help='the temperature parameter for contrastive loss (recommended 0.7–1.0)')
@@ -278,7 +278,7 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 
 
 def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_train_client, y_train_client, X_test, y_test,
-                                        device='cpu', test_only=False, test_only_k=0, global_model=None):
+                                        device='cpu', test_only=False, test_only_k=0):
     base_model = net
     base_model.train()
     gmodel = base_model
@@ -600,12 +600,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                                 loss_all += contras_loss / Q * 0.1
                             loss_all += loss_ce(out_all, y_total)
 
-                if args.alg == 'fedprox' and global_model is not None:
-                    prox = 0.0
-                    for name, param in gmodel.named_parameters():
-                        prox += (param - global_model.state_dict()[name].detach()).pow(2).sum()
-                    loss_all += (args.mu / 2) * prox
-
                 if use_amp:
                     scaler.scale(loss_all).backward()
                     scaler.unscale_(dp_optimizer)
@@ -786,7 +780,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             gmodel = remove_dp_hooks(gmodel)
         base_model.train()
     return result, epsilon, last_loss
-def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0, global_model=None):
+def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
     avg_acc = 0.0
     acc_list = []
     max_value_all_clients = []
@@ -812,10 +806,8 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
         if test_only is False:
             prev_params = copy.deepcopy(net.state_dict())
             net.train()
-            result, _, loss_value = train_net_few_shot_new(
-                net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
-                device=device, test_only=False, global_model=global_model
-            )
+            result, _, loss_value = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+                                        device=device, test_only=False)
             testacc = result
             losses.append(loss_value)
             if args.dp_mode == 'server':
@@ -845,10 +837,8 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 args.client_grad_norms[net_id] = grad_ma_decay * prev + (1 - grad_ma_decay) * norm
         else:
             net.train()
-            result, _, _ = train_net_few_shot_new(
-                net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
-                device=device, test_only=True, test_only_k=test_only_k, global_model=global_model
-            )
+            result, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+                                        device=device, test_only=True, test_only_k=test_only_k)
             testacc, max_values, indices = result
             max_value_all_clients.append(max_values)
             indices_all_clients.append(indices)
@@ -1089,7 +1079,7 @@ if __name__ == '__main__':
         moment_v = copy.deepcopy(global_model.state_dict())
         for key in moment_v:
             moment_v[key] = 0
-    if args.alg in ('fedavg', 'fedprox'):
+    if args.alg == 'fedavg':
         use_minus = False
         best_acc = 0
         best_confident_acc = 0
@@ -1110,7 +1100,6 @@ if __name__ == '__main__':
             participating_ids = list(nets_this_round.keys())
 
             total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
-            train_args = {'global_model': global_model} if args.alg == 'fedprox' else {}
 
             for client_id in participating_ids:
                 net = nets_this_round[client_id]
@@ -1127,10 +1116,7 @@ if __name__ == '__main__':
                     net.load_state_dict(net_para)
 
             for k in [1,5]:
-                global_acc, max_value_all_clients, indices_all_clients, _ = local_train_net_few_shot(
-                    nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test,
-                    device=device, test_only=True, test_only_k=k, **train_args
-                )
+                global_acc, max_value_all_clients, indices_all_clients, _ = local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, test_only=True, test_only_k=k)
                 global_acc = max(global_acc)
                 if k == 1:
                     if global_acc > best_acc + args.convergence_delta:
@@ -1148,13 +1134,11 @@ if __name__ == '__main__':
                         '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
             if args.dp_mode == 'server':
                 deltas, _, round_loss = local_train_net_few_shot(
-                    nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test,
-                    device=device, **train_args
+                    nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
             else:
                 _, _, round_loss = local_train_net_few_shot(
-                    nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test,
-                    device=device, **train_args
+                    nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
 
             logger.info('Round %d loss %.4f', round, round_loss)
