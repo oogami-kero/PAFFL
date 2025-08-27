@@ -200,6 +200,7 @@ def get_args():
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     parser.add_argument('--dp_noise_scale', type=float, default=0.1, help='additional scaling for DP noise')
+    parser.add_argument('--dp_z', type=float, default=0.2, help='target noise-to-clip ratio')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
     parser.add_argument('--dp_clip_max', type=float, default=2.0, help='maximum DP-SGD clipping norm')
     parser.add_argument('--dp_target_clip_fraction', type=float, default=0.1,
@@ -1180,11 +1181,12 @@ if __name__ == '__main__':
             if args.dp_mode == 'server':
                 if round == 0:
                     new_clip = float(np.percentile(list(args.client_grad_norms.values()), 85))
-                    old_clip = args.dp_clip
                     args.dp_clip = min(new_clip, args.dp_clip_max)
                     args.log_dp_clip = math.log(args.dp_clip)
-                    args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
-                old_clip, old_noise = args.dp_clip, args.dp_noise
+                    args.dp_noise = dp_utils.noise_multiplier_for_z(
+                        args.dp_z, args.dp_clip, len(deltas), args.dp_noise_scale
+                    )
+                old_clip = args.dp_clip
                 decay = 0.9
                 num_clients = len(deltas) or 1
                 if num_clients * args.dp_target_clip_fraction < 1:
@@ -1201,11 +1203,18 @@ if __name__ == '__main__':
                 new_clip = max(min(new_clip, old_clip * 1.15), old_clip * 0.85)
                 args.dp_clip = max(1.0, min(new_clip, args.dp_clip_max))
                 args.log_dp_clip = math.log(args.dp_clip)
-                args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
-                noise_std = args.dp_noise * args.dp_noise_scale / num_clients
-                z = noise_std / args.dp_clip
-                print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
-                logger.info('clip EMA %.4f, DP clip %.4f, z %.4f', args.clip_frac_ema, args.dp_clip, z)
+                args.dp_noise = dp_utils.noise_multiplier_for_z(
+                    args.dp_z, args.dp_clip, len(deltas), args.dp_noise_scale
+                )
+                print(
+                    f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {args.dp_z:.4f}'
+                )
+                logger.info(
+                    'clip EMA %.4f, DP clip %.4f, z %.4f',
+                    args.clip_frac_ema,
+                    args.dp_clip,
+                    args.dp_z,
+                )
             if hasattr(args, 'mean_clip_scale'):
                 if not hasattr(args, 'base_server_lr'):
                     args.base_server_lr = args.server_lr
