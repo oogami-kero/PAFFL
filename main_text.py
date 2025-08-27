@@ -197,10 +197,7 @@ def get_args():
     parser.add_argument('--use_transform_layer', type=int, default=0,
                         help='enable personalized transformation layer')
     parser.add_argument('--use_dp', type=int, default=0, help='enable DP-SGD')
-    parser.add_argument('--dp_clip_backbone', '--dp_clip', type=float, default=1.0,
-                        help='DP-SGD clipping norm for backbone parameters')
-    parser.add_argument('--dp_clip_transform', type=float, default=1.0,
-                        help='DP-SGD clipping norm for transform layer')
+    parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     parser.add_argument('--dp_noise_scale', type=float, default=0.1, help='additional scaling for DP noise')
     parser.add_argument('--dp_z', type=float, default=0.2, help='target noise-to-clip ratio')
@@ -215,9 +212,8 @@ def get_args():
     parser.add_argument('--use_amp', action='store_true', help='enable mixed precision training')
     args = parser.parse_args()
     args.use_dp = int(args.dp_mode != 'off')
-    args.dp_clip_backbone = min(args.dp_clip_backbone, args.dp_clip_max)
-    args.dp_clip = args.dp_clip_backbone
-    args.log_dp_clip = math.log(max(1.0, args.dp_clip_backbone))
+    args.dp_clip = min(args.dp_clip, args.dp_clip_max)
+    args.log_dp_clip = math.log(max(1.0, args.dp_clip))
     return args
 
 
@@ -895,14 +891,13 @@ def aggregate_deltas(
     noise_multipliers: dict[str, float] | None = None,
     reset_bn: bool = False,
 ):
-    """Aggregate client deltas with block-wise clipping and noise.
+    """Aggregate client deltas with clipping and noise.
 
-    Parameters containing ``'transform_layer'`` are clipped separately from the
-    rest of the model using ``args.dp_clip_transform`` and ``args.dp_clip``
-    respectively. Noise for each block is scaled so the desired
-    noise-to-clip ratio ``args.dp_z`` is preserved. Clip fractions for the
-    backbone and transform layers are tracked in
-    ``args.last_clip_fraction_backbone`` and ``args.last_clip_fraction_transform``.
+    Noise is scaled by the number of participating clients. When
+    ``noise_multipliers`` is provided, parameter-specific multipliers are applied
+    on top of the base noise multiplier ``args.dp_noise``. The fraction of
+    client updates that were clipped is stored in
+    ``args.last_clip_fraction`` for adaptive clipping strategies.
 
     Args:
         global_w (dict): Global model weights to be updated.
@@ -912,10 +907,10 @@ def aggregate_deltas(
         reset_bn (bool, optional): Reset BatchNorm statistics after aggregation.
     """
     clipped = []
-    scales_backbone, scales_transform = [], []
-    clipped_backbone = clipped_transform = 0
+    clipped_count = 0
+    scales = []
     for delta in deltas.values():
-        flat_backbone = torch.cat([
+        flat = torch.cat([
             v.view(-1)
             for k, v in delta.items()
             if not any(
@@ -929,62 +924,18 @@ def aggregate_deltas(
                 )
             )
         ])
-        norm_backbone = torch.norm(flat_backbone).item()
-        scale_backbone = min(1.0, args.dp_clip / (norm_backbone + 1e-12))
-        flat_transform = (
-            torch.cat([v.view(-1) for k, v in delta.items() if 'transform_layer' in k])
-            if any('transform_layer' in k for k in delta)
-            else torch.tensor([], device=flat_backbone.device)
-        )
-        norm_transform = (
-            torch.norm(flat_transform).item() if flat_transform.numel() > 0 else 0.0
-        )
-        scale_transform = (
-            min(1.0, args.dp_clip_transform / (norm_transform + 1e-12))
-            if norm_transform > 0
-            else 1.0
-        )
-        scales_backbone.append(scale_backbone)
-        scales_transform.append(scale_transform)
-        if scale_backbone < 1.0:
-            clipped_backbone += 1
-        if norm_transform > 0 and scale_transform < 1.0:
-            clipped_transform += 1
-        clipped.append(
-            {
-                k: v * (scale_transform if 'transform_layer' in k else scale_backbone)
-                for k, v in delta.items()
-                if 'few_classify' not in k
-            }
-        )
+        norm = torch.norm(flat).item()
+        scale = min(1.0, args.dp_clip / (norm + 1e-12))
+        scales.append(scale)
+        if scale < 1.0:
+            clipped_count += 1
+        clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
-    args.mean_clip_scale_backbone = (
-        sum(scales_backbone) / num_clients if scales_backbone else 1.0
-    )
-    args.mean_clip_scale_transform = (
-        sum(scales_transform) / num_clients if scales_transform else 1.0
-    )
-    args.mean_clip_scale = args.mean_clip_scale_backbone
-    args.last_clip_fraction_backbone = clipped_backbone / num_clients
-    args.last_clip_fraction_transform = clipped_transform / num_clients
-    args.last_clip_fraction = args.last_clip_fraction_backbone
-    logging.info(
-        'Clipped fraction backbone: %.4f transform: %.4f',
-        args.last_clip_fraction_backbone,
-        args.last_clip_fraction_transform,
-    )
-    noise_mult_backbone = args.dp_noise
-    noise_mult_transform = dp_utils.scale_noise_to_clip(
-        args.dp_noise, args.dp_clip, args.dp_clip_transform
-    )
-    base_noise_std_backbone = noise_mult_backbone * args.dp_noise_scale / num_clients
-    base_noise_std_transform = noise_mult_transform * args.dp_noise_scale / num_clients
-    logging.info(
-        'Effective noise std backbone %.6f transform %.6f (clients=%d)',
-        base_noise_std_backbone,
-        base_noise_std_transform,
-        num_clients,
-    )
+    args.mean_clip_scale = sum(scales) / num_clients if scales else 1.0
+    args.last_clip_fraction = clipped_count / num_clients
+    logging.info('Clipped fraction: %.4f', args.last_clip_fraction)
+    base_noise_std = args.dp_noise * args.dp_noise_scale / num_clients
+    logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
     for key in global_w:
         if 'few_classify' in key:
             continue
@@ -996,14 +947,11 @@ def aggregate_deltas(
                 else:
                     global_w[key].zero_()
             continue
+        if 'transform_layer' in key:
+            continue
         stacked = torch.stack([d[key] for d in clipped])
         avg_update = stacked.mean(dim=0)
-        if 'transform_layer' in key:
-            noise_mult = noise_mult_transform
-        else:
-            noise_mult = noise_mult_backbone
-        if noise_multipliers is not None:
-            noise_mult = noise_multipliers.get(key, noise_mult)
+        noise_mult = args.dp_noise if noise_multipliers is None else noise_multipliers.get(key, args.dp_noise)
         noise = (
             torch.randn_like(avg_update)
             * noise_mult

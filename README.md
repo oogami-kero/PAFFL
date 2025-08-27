@@ -45,8 +45,7 @@ The repository now includes optional support for a **personalised transformation
   * `local` (default): apply DP-SGD on each client.
   * `server`: clip and noise client updates on the server.
   * `off`: disable differential privacy.
-  * `--dp_clip_backbone`: clipping norm for backbone parameters (default `1.0`)
-  * `--dp_clip_transform`: clipping norm for transform layer (default `1.0`)
+  * `--dp_clip`: clipping norm (default `1.0`)
   * `--dp_noise`: noise multiplier
   * `--dp_delta`: target delta for privacy accounting (default `1e-5`)
   * `--print_eps`: output the current ε after each communication round when set to `1`
