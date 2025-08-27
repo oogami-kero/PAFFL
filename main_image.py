@@ -946,7 +946,6 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         scales.append(scale)
         clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
-    args.mean_clip_scale = sum(scales) / num_clients if scales else 1.0
     args.last_clip_fraction = float(np.mean([s < 1.0 for s in scales])) if scales else 0.0
     logging.info('Clipped fraction: %.4f', args.last_clip_fraction)
     if scales:
@@ -1237,14 +1236,6 @@ if __name__ == '__main__':
                 z = noise_std / args.dp_clip
                 print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
                 logger.info('clip EMA %.4f, DP clip %.4f, z %.4f', args.clip_frac_ema, args.dp_clip, z)
-            if hasattr(args, 'mean_clip_scale'):
-                if not hasattr(args, 'base_server_lr'):
-                    args.base_server_lr = args.server_lr
-                if args.mean_clip_scale <= 0.6:
-                    mult = 1.0 / max(0.3, args.mean_clip_scale)
-                    args.server_lr = args.base_server_lr * min(3.0, mult)
-                else:
-                    args.server_lr = args.base_server_lr
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:

@@ -897,7 +897,6 @@ def aggregate_deltas(
     """
     clipped = []
     clipped_count = 0
-    scales = []
     for delta in deltas.values():
         flat = torch.cat([
             v.view(-1)
@@ -913,14 +912,12 @@ def aggregate_deltas(
                 )
             )
         ])
-        norm = torch.norm(flat).item()
+        norm = torch.norm(flat)
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
-        scales.append(scale)
         if scale < 1.0:
             clipped_count += 1
         clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
-    args.mean_clip_scale = sum(scales) / num_clients if scales else 1.0
     args.last_clip_fraction = clipped_count / num_clients
     logging.info('Clipped fraction: %.4f', args.last_clip_fraction)
     base_noise_std = args.dp_noise * args.dp_noise_scale / num_clients
@@ -1206,14 +1203,6 @@ if __name__ == '__main__':
                 z = noise_std / args.dp_clip
                 print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
                 logger.info('clip EMA %.4f, DP clip %.4f, z %.4f', args.clip_frac_ema, args.dp_clip, z)
-            if hasattr(args, 'mean_clip_scale'):
-                if not hasattr(args, 'base_server_lr'):
-                    args.base_server_lr = args.server_lr
-                if args.mean_clip_scale <= 0.6:
-                    mult = 1.0 / max(0.3, args.mean_clip_scale)
-                    args.server_lr = args.base_server_lr * min(3.0, mult)
-                else:
-                    args.server_lr = args.base_server_lr
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:
