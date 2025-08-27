@@ -93,28 +93,6 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
     return math.sqrt(2 * num_steps * math.log(1 / delta)) / noise_mult
 
 
-def noise_multiplier_for_z(z, clip, num_clients, scale):
-    """Return a noise multiplier for a desired ``z`` value.
-
-    Parameters
-    ----------
-    z : float
-        Target ratio of noise standard deviation to the clipping norm.
-    clip : float
-        Clipping bound applied to client updates.
-    num_clients : int
-        Number of participating clients.
-    scale : float
-        Additional scaling applied to the noise.
-
-    Returns
-    -------
-    float
-        Noise multiplier producing the requested ``z``.
-    """
-    return z * clip * num_clients / scale
-
-
 def scale_noise_to_clip(noise_mult, old_clip, new_clip):
     """Return a noise multiplier keeping the noise-to-clip ratio fixed.
 
