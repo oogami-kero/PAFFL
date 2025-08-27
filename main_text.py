@@ -170,7 +170,12 @@ def get_args():
 
     parser.add_argument('--mu', type=float, default=1, help='the mu parameter for fedprox or moon')
     parser.add_argument('--out_dim', type=int, default=256, help='the output dimension for the projection layer')
-    parser.add_argument('--temperature', type=float, default=0.5, help='the temperature parameter for contrastive loss')
+    parser.add_argument('--temperature', type=float, default=0.5,
+                        help='the temperature parameter for contrastive loss (recommended 0.7–1.0)')
+    parser.add_argument('--mix_ce_ratio', type=float, default=0.0,
+                        help='probability of using cross-entropy episodes when mixing with contrastive ones')
+    parser.add_argument('--l2sp_lambda', type=float, default=0.0,
+                        help='weight for L2-SP regularization during fine-tuning')
     parser.add_argument('--local_max_epoch', type=int, default=100, help='the number of epoch for local optimal training')
     parser.add_argument('--model_buffer_size', type=int, default=1, help='store how many previous models for contrastive loss')
     parser.add_argument('--pool_option', type=str, default='FIFO', help='FIFO or BOX')
@@ -524,9 +529,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     
     
             if mode == 'train':
-                loss_all=0
-    
-    
+                ce_episode = args.mix_ce_ratio > 0 and np.random.rand() < args.mix_ce_ratio
+                loss_all = 0
+
                 if args.dataset=='fewrel':
                     args.meta_lr=0.001
                     #args.fine_tune_steps=0
@@ -534,13 +539,21 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     gmodel_base = gmodel._module if hasattr(gmodel, '_module') else gmodel
                     net_new = copy.deepcopy(model_template)
                     net_new.load_state_dict(gmodel_base.state_dict())
+                    init_params = {name: param.clone().detach() for name, param in net_new.named_parameters()}
 
                     for j in range(args.fine_tune_steps):
                         net_new.zero_grad()
                         with autocast(enabled=use_amp):
                             X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
                             losses = F.cross_entropy(out, support_labels, reduction='none')
-                        losses.mean().backward()
+                            if args.l2sp_lambda > 0:
+                                l2sp = 0.0
+                                for name, param in net_new.named_parameters():
+                                    l2sp += (param - init_params[name]).pow(2).sum()
+                                loss_ft = losses.mean() + args.l2sp_lambda * l2sp
+                            else:
+                                loss_ft = losses.mean()
+                        loss_ft.backward()
                         with torch.no_grad():
                             params_to_update = []
                             for name, param in net_new.named_parameters():
@@ -567,11 +580,24 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
                         #############################
                         # Q=K here update for all-model
-                        for j in range(Q):
-                            contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q],
-                                                                     tau=0.5)
-                            loss_all += contras_loss / Q *0.1
-                        loss_all += loss_ce(out_all, y_total)
+                        if args.mix_ce_ratio > 0:
+                            if ce_episode:
+                                loss_all += loss_ce(out_all, y_total)
+                            else:
+                                for j in range(Q):
+                                    contras_loss, similarity = InforNCE_Loss(
+                                        X_transformer_out_sup[j], out_sup[(j + 1) % Q],
+                                        tau=args.temperature
+                                    )
+                                    loss_all += contras_loss / Q * 0.1
+                        else:
+                            for j in range(Q):
+                                contras_loss, similarity = InforNCE_Loss(
+                                    X_transformer_out_sup[j], out_sup[(j + 1) % Q],
+                                    tau=args.temperature
+                                )
+                                loss_all += contras_loss / Q * 0.1
+                            loss_all += loss_ce(out_all, y_total)
 
                 if use_amp:
                     scaler.scale(loss_all).backward()
@@ -615,7 +641,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     if tl_optimizer is not None:
                         tl_optimizer.step()
                 ############################
-    
+
                     for name, param in gmodel.named_parameters():
                         if 'transformer' in name:
                             param.requires_grad_(False)
@@ -629,28 +655,29 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     for name, param in gmodel.named_parameters():
                         if 'transformer' in name:
                             param.requires_grad_(True)
-                    ###################################
-                    # few_classify update
-                    params_to_update = []
-                    for name, param in net_new.named_parameters():
-                        if name in ('few_classify.weight', 'few_classify.bias') or 'transformer' in name:
-                            params_to_update.append((name, param))
 
-                    #meta-update few-classifier on query
-                    losses = F.cross_entropy(out, query_labels, reduction='none')
-                    out_sup_on_N_class = out_all[N * K:, transformed_class_list]
-                    aux_loss = F.cross_entropy(out, out_sup_on_N_class.detach(), reduction='none') * 0
-                    losses = losses + aux_loss
-                    net_new.zero_grad()
-                    losses.mean().backward()
-                    with torch.no_grad():
-                        gmodel_params = dict(gmodel.named_parameters())
-                        for name, param in params_to_update:
-                            if param.grad is None:
-                                continue
-                            gmodel_params[name].data.add_(-args.meta_lr * param.grad)
-                    base_model.load_state_dict(gmodel.state_dict())
-                    ##################################
+                    if args.mix_ce_ratio == 0 or ce_episode:
+                        ###################################
+                        # few_classify update
+                        params_to_update = []
+                        for name, param in net_new.named_parameters():
+                            if name in ('few_classify.weight', 'few_classify.bias') or 'transformer' in name:
+                                params_to_update.append((name, param))
+
+                        #meta-update few-classifier on query
+                        losses = F.cross_entropy(out, query_labels, reduction='none')
+                        out_sup_on_N_class = out_all[N * K:, transformed_class_list]
+                        aux_loss = F.cross_entropy(out, out_sup_on_N_class.detach(), reduction='none') * 0
+                        losses = losses + aux_loss
+                        net_new.zero_grad()
+                        losses.mean().backward()
+                        with torch.no_grad():
+                            gmodel_params = dict(gmodel.named_parameters())
+                            for name, param in params_to_update:
+                                if param.grad is None:
+                                    continue
+                                gmodel_params[name].data.add_(-args.meta_lr * param.grad)
+                        base_model.load_state_dict(gmodel.state_dict())
                     del net_new, X_out_query, out
     
                 if np.random.rand() < 0.005:
