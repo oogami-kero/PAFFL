@@ -206,6 +206,8 @@ def get_args():
     parser.add_argument('--use_amp', action='store_true', help='enable mixed precision training')
     args = parser.parse_args()
     args.use_dp = int(args.dp_mode != 'off')
+    args.dp_clip = min(args.dp_clip, args.dp_clip_max)
+    args.log_dp_clip = math.log(max(1.0, args.dp_clip))
     return args
 
 
@@ -1113,22 +1115,25 @@ if __name__ == '__main__':
                 dp_steps += args.num_train_tasks * len(participating_ids)
             elif args.dp_mode == 'server':
                 dp_steps += 1
-            if args.dp_mode == 'server' and getattr(args, 'client_grad_norms', None):
+            if args.dp_mode == 'server':
                 old_clip, old_noise = args.dp_clip, args.dp_noise
-                new_clip = float(np.percentile(list(args.client_grad_norms.values()), 90))
-                clipped_clip = max(1.0, min(new_clip, args.dp_clip_max))
-                if not hasattr(args, 'log_dp_clip'):
-                    args.log_dp_clip = math.log(max(1.0, args.dp_clip))
-                eta = 0.4
-                args.log_dp_clip += eta * (math.log(clipped_clip) - args.log_dp_clip)
-                args.dp_clip = float(math.exp(args.log_dp_clip))
-                args.dp_clip = max(1.0, min(args.dp_clip, args.dp_clip_max))
+                decay = 0.9
+                if not hasattr(args, 'clip_frac_ema'):
+                    args.clip_frac_ema = args.last_clip_fraction
+                else:
+                    args.clip_frac_ema = decay * args.clip_frac_ema + (1 - decay) * args.last_clip_fraction
+                eta = 0.1
+                args.log_dp_clip += eta * (args.clip_frac_ema - args.dp_target_clip_fraction)
+                new_clip = float(math.exp(args.log_dp_clip))
+                new_clip = max(min(new_clip, old_clip * 1.1), old_clip * 0.9)
+                args.dp_clip = max(1.0, min(new_clip, args.dp_clip_max))
+                args.log_dp_clip = math.log(args.dp_clip)
                 args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
                 num_clients = len(deltas) or 1
                 noise_std = args.dp_noise * args.dp_noise_scale / num_clients
                 z = noise_std / args.dp_clip
-                print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
-                logger.info('90th percentile %.4f, DP clip %.4f, z %.4f', new_clip, args.dp_clip, z)
+                print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
+                logger.info('clip EMA %.4f, DP clip %.4f, z %.4f', args.clip_frac_ema, args.dp_clip, z)
             if args.dp_mode != 'off':
                 epsilon = dp_utils.compute_epsilon(
                     dp_steps,
