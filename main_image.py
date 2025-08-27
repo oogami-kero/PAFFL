@@ -787,11 +787,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             result = (np.mean(accs), torch.cat(max_values, 0), torch.cat(indices, 0))
 
         if args.dp_mode == 'local' and args.grad_norms_ma:
-            new_clip = float(np.percentile(list(args.grad_norms_ma.values()), 85))
+            new_clip = float(np.percentile(list(args.grad_norms_ma.values()), 90))
             args.dp_clip = min(new_clip, args.dp_clip_max)
-            args.log_dp_clip = math.log(args.dp_clip)
-            print(f'85th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}')
-            logger.info('85th percentile %.4f, DP clip %.4f', new_clip, args.dp_clip)
+            print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}')
+            logger.info('90th percentile %.4f, DP clip %.4f', new_clip, args.dp_clip)
         if np.random.rand() < 0.3:
             print('Meta-test_Accuracy: {:.4f}'.format(np.mean(accs)))
         #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
@@ -1208,30 +1207,22 @@ if __name__ == '__main__':
                     sampling_rate=len(participating_ids) / args.n_parties,
                 )
             if args.dp_mode == 'server':
-                if round == 0:
-                    new_clip = float(np.percentile(list(args.client_grad_norms.values()), 85))
-                    old_clip = args.dp_clip
-                    args.dp_clip = min(new_clip, args.dp_clip_max)
-                    args.log_dp_clip = math.log(args.dp_clip)
-                    args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
                 old_clip, old_noise = args.dp_clip, args.dp_noise
                 decay = 0.9
-                num_clients = len(deltas) or 1
-                if num_clients * args.dp_target_clip_fraction < 1:
-                    args.dp_target_clip_fraction = 0.5
                 if not hasattr(args, 'last_clip_fraction'):
                     args.last_clip_fraction = args.dp_target_clip_fraction
                 if not hasattr(args, 'clip_frac_ema'):
                     args.clip_frac_ema = args.last_clip_fraction
                 else:
                     args.clip_frac_ema = decay * args.clip_frac_ema + (1 - decay) * args.last_clip_fraction
-                eta = 0.2
+                eta = 0.1
                 args.log_dp_clip += eta * (args.clip_frac_ema - args.dp_target_clip_fraction)
                 new_clip = float(math.exp(args.log_dp_clip))
-                new_clip = max(min(new_clip, old_clip * 1.15), old_clip * 0.85)
+                new_clip = max(min(new_clip, old_clip * 1.1), old_clip * 0.9)
                 args.dp_clip = max(1.0, min(new_clip, args.dp_clip_max))
                 args.log_dp_clip = math.log(args.dp_clip)
                 args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
+                num_clients = len(deltas) or 1
                 noise_std = args.dp_noise * args.dp_noise_scale / num_clients
                 z = noise_std / args.dp_clip
                 print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
