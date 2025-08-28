@@ -368,12 +368,34 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         if norms:
             new_clip = float(np.percentile(norms, 90))
             args.dp_clip = min(new_clip, args.dp_clip_max)
-            args.log_dp_clip = math.log(max(1.0, args.dp_clip))
             args.dp_clip_calibrated = True
             print(f'warm-up DP clip: {args.dp_clip:.4f}')
         base_model.load_state_dict(model_template.state_dict())
         dp_optimizer.zero_grad()
         head_optimizer.zero_grad()
+
+    if args.dp_mode == 'server' and args.dp_warmup_batches > 0 and not getattr(args, 'dp_clip_calibrated', False):
+        p90s, weights = [], []
+        for net_id in range(args.n_parties):
+            dataidxs = net_dataidx_map[net_id]
+            X_train_client = X_train[dataidxs]
+            y_train_client = y_train[dataidxs]
+            warm_loader = DataLoader(
+                TensorDataset(torch.tensor(X_train_client), torch.tensor(y_train_client)),
+                batch_size=total_batch,
+                shuffle=True,
+            )
+            tmp_model = copy.deepcopy(global_model)
+            warm_opt = optim.SGD(tmp_model.parameters(), lr=args.lr)
+            norms = collect_grad_norms(tmp_model, warm_loader, warm_opt, args.dp_warmup_batches, args.device)
+            if norms:
+                p90s.append(float(np.percentile(norms, 90)))
+                weights.append(len(y_train_client))
+        if p90s:
+            args.dp_clip = dp_utils.initial_clip(p90s, weights, max_clip=args.dp_clip_max)
+            args.dp_clip_calibrated = True
+            print(f'warm-up DP clip: {args.dp_clip:.4f}')
+        args.clipper = dp_utils.AdaptiveClipper(args.dp_clip, max_clip=args.dp_clip_max)
 
     privacy_engine = None
     if args.dp_mode == 'local' and dp_params:
@@ -961,6 +983,7 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
     """
     clipped = []
     scales = []
+    norms = []
     for cid, delta in deltas.items():
         flat = torch.cat([
             v.view(-1)
@@ -977,6 +1000,7 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
             )
         ])
         norm = torch.norm(flat).item()
+        norms.append(norm)
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
         logging.info('Client %s norm %.4f scale %.4f', cid, norm, scale)
         scales.append(scale)
@@ -984,6 +1008,11 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
     num_clients = len(clipped) or 1
     args.last_clip_fraction = float(np.mean([s < 1.0 for s in scales])) if scales else 0.0
     logging.info('Clipped fraction: %.4f', args.last_clip_fraction)
+    if norms:
+        args.q0_9 = float(np.percentile(norms, 90))
+    else:
+        args.q0_9 = args.dp_clip
+    logging.info('q0.9 norm: %.4f', args.q0_9)
     if scales:
         logging.info('Clipping scale stats - mean: %.4f max: %.4f', float(np.mean(scales)), float(np.max(scales)))
     base_noise_std = args.dp_noise * args.dp_noise_scale / num_clients
@@ -1244,32 +1273,23 @@ if __name__ == '__main__':
                     sampling_rate=len(participating_ids) / args.n_parties,
                 )
             if args.dp_mode == 'server':
-                old_clip, old_noise = args.dp_clip, args.dp_noise
-                decay = 0.9
-                if not hasattr(args, 'last_clip_fraction'):
-                    args.last_clip_fraction = args.dp_target_clip_fraction
-                if not hasattr(args, 'clip_frac_ema'):
-                    args.clip_frac_ema = args.last_clip_fraction
-                else:
-                    args.clip_frac_ema = decay * args.clip_frac_ema + (1 - decay) * args.last_clip_fraction
-                eta = 0.1
-                args.log_dp_clip += eta * (args.clip_frac_ema - args.dp_target_clip_fraction)
-                new_clip = float(math.exp(args.log_dp_clip))
-                new_clip = max(min(new_clip, old_clip * 1.1), old_clip * 0.9)
-                args.dp_clip = max(1.0, min(new_clip, args.dp_clip_max))
-                args.log_dp_clip = math.log(args.dp_clip)
+                if not hasattr(args, 'clipper'):
+                    args.clipper = dp_utils.AdaptiveClipper(args.dp_clip, max_clip=args.dp_clip_max)
+                args.dp_clip = args.clipper.update(args.last_clip_fraction, getattr(args, 'q0_9', args.dp_clip))
                 num_clients = len(deltas) or 1
-                if args.dp_noise_clip_ratio is not None:
-                    max_std = args.dp_noise_clip_ratio * args.dp_clip
-                    noise_std = min(old_noise * args.dp_noise_scale / num_clients, max_std)
-                    args.dp_noise = noise_std * num_clients / args.dp_noise_scale
-                else:
-                    args.dp_noise = old_noise
-                    noise_std = args.dp_noise * args.dp_noise_scale / num_clients
-                z = noise_std / args.dp_clip
-                print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, noise std: {noise_std:.4f}, z: {z:.4f}')
-                logger.info('clip EMA %.4f, DP clip %.4f, noise std %.4f, z %.4f',
-                            args.clip_frac_ema, args.dp_clip, noise_std, z)
+                noise_std = args.dp_noise * args.dp_noise_scale / num_clients
+                print(
+                    f'clip: {args.dp_clip:.4f}, clipped_fraction: {args.last_clip_fraction:.4f}, '
+                    f'q0.9: {args.q0_9:.4f}, noise std: {noise_std:.4f}, epsilon: {epsilon:.4f}'
+                )
+                logger.info(
+                    'clip %.4f, clipped_fraction %.4f, q0.9 %.4f, noise std %.4f, epsilon %.4f',
+                    args.dp_clip,
+                    args.last_clip_fraction,
+                    args.q0_9,
+                    noise_std,
+                    epsilon,
+                )
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:

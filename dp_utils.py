@@ -1,5 +1,10 @@
 import math
-from opacus.grad_sample import GradSampleModule
+import numpy as np
+try:
+    from opacus.grad_sample import GradSampleModule
+except Exception:  # pragma: no cover - fallback when opacus is absent
+    class GradSampleModule:  # type: ignore
+        pass
 
 
 def remove_dp_hooks(model):
@@ -173,3 +178,121 @@ def find_noise_multiplier(
         if abs(eps - target_eps) <= tol:
             break
     return hi
+
+
+def weighted_median(values, weights=None):
+    """Return the weighted median of ``values``.
+
+    Parameters
+    ----------
+    values : list[float]
+        Data values.
+    weights : list[float], optional
+        Corresponding non-negative weights. If ``None`` all weights are equal.
+
+    Returns
+    -------
+    float
+        Weighted median.
+    """
+    if not values:
+        raise ValueError('values must be non-empty')
+    if weights is None:
+        weights = [1.0] * len(values)
+    sorted_pairs = sorted(zip(values, weights), key=lambda x: x[0])
+    values, weights = zip(*sorted_pairs)
+    cum_weights = np.cumsum(weights)
+    threshold = 0.5 * cum_weights[-1]
+    idx = int(np.searchsorted(cum_weights, threshold, side='left'))
+    return float(values[idx])
+
+
+def initial_clip(p90s, weights=None, min_clip=1.2, max_clip=5.0):
+    """Compute the initial clipping bound from client percentiles."""
+    clip = weighted_median(p90s, weights)
+    return float(max(min_clip, min(clip, max_clip)))
+
+
+class AdaptiveClipper:
+    """Adaptive clipping controller with percentile blending.
+
+    The controller adjusts the clipping bound to keep the fraction of clipped
+    client updates close to a target level while incorporating percentile
+    information from gradient norms. Noise is assumed to remain fixed.
+    """
+
+    def __init__(
+        self,
+        clip,
+        target=0.2,
+        beta=0.95,
+        kp=0.05,
+        gamma=0.1,
+        alpha=0.5,
+        min_clip=1.2,
+        max_clip=5.0,
+    ):
+        self.clip = clip
+        self.target = target
+        self.beta = beta
+        self.kp = kp
+        self.gamma = gamma
+        self.alpha = alpha
+        self.min_clip = min_clip
+        self.max_clip = max_clip
+        self.clip_frac_ema = target
+        self._deadband = 0.05
+        self._steady_rounds = 0
+        self._high_ctr = 0
+        self._low_ctr = 0
+
+    def update(self, clipped_fraction, q90):
+        """Update the clipping bound.
+
+        Parameters
+        ----------
+        clipped_fraction : float
+            Fraction of client updates that were clipped this round.
+        q90 : float
+            90th percentile of pre-clip gradient norms across clients.
+
+        Returns
+        -------
+        float
+            Updated clipping bound.
+        """
+        self.clip_frac_ema = self.beta * self.clip_frac_ema + (1 - self.beta) * clipped_fraction
+        if abs(self.clip_frac_ema - self.target) <= self._deadband:
+            self._steady_rounds += 1
+        else:
+            self._steady_rounds = 0
+        if self._steady_rounds >= 3:
+            return self.clip
+
+        log_c = math.log(self.clip)
+        log_c_prime = log_c + self.kp * (self.clip_frac_ema - self.target)
+        log_c_tilde = (1 - self.gamma) * log_c + self.gamma * math.log(max(q90, 1e-12))
+        log_c_new = (1 - self.alpha) * log_c_prime + self.alpha * log_c_tilde
+        c_new = float(math.exp(log_c_new))
+        c_new = max(min(c_new, self.clip * 1.1), self.clip * 0.9)
+        c_new = max(self.min_clip, min(c_new, self.max_clip))
+        self.clip = c_new
+
+        if clipped_fraction > 0.5:
+            self._high_ctr += 1
+            self._low_ctr = 0
+        elif clipped_fraction < 0.05:
+            self._low_ctr += 1
+            self._high_ctr = 0
+        else:
+            self._high_ctr = 0
+            self._low_ctr = 0
+
+        if self._high_ctr >= 5:
+            self.clip = min(self.clip * 1.12, self.max_clip)
+            self._high_ctr = 0
+        if self._low_ctr >= 5:
+            self.clip = max(self.clip * 0.88, self.min_clip)
+            self._low_ctr = 0
+
+        return self.clip
