@@ -229,11 +229,27 @@ def stabilize_adaptive_clip(args, epsilon, num_clients, logger=logging):
         log_perc = 0.9 * log_c + 0.1 * math.log(q90)
         log_blend = 0.5 * log_ctrl + 0.5 * log_perc
         cand = math.exp(log_blend)
-        cand = max(0.9 * args.dp_clip, min(1.1 * args.dp_clip, cand))
-        new_clip = min(max(cand, 1.2), 5.0)
+        step = getattr(args, 'dp_clip_step_cap', 0.10)
+        low_step = args.dp_clip * (1.0 - step)
+        high_step = args.dp_clip * (1.0 + step)
+        cand = max(low_step, min(high_step, cand))
+        dp_min = getattr(args, 'dp_clip_min', 1.2)
+        dp_max = getattr(args, 'dp_clip_max', 5.0)
+        new_clip = max(dp_min, min(dp_max, cand))
     args.dp_clip = new_clip
     args.log_dp_clip = math.log(args.dp_clip)
     noise_std = args.dp_noise * args.dp_noise_scale / num_clients
+    if getattr(args, 'last_clip_fraction', 0.0) > 0.95:
+        args.saturation_ctr = getattr(args, 'saturation_ctr', 0) + 1
+    else:
+        args.saturation_ctr = 0
+    if getattr(args, 'saturation_ctr', 0) >= 3 and args.dp_clip >= 0.98 * getattr(args, 'dp_clip_max', args.dp_clip):
+        msg = (
+            'Clipped ~100%, controller saturated at dp_clip_max. '
+            'Raise --dp_clip_max (try ×1.5) or reduce local drift (epochs/μ).'
+        )
+        print(f'WARNING: {msg}')
+        logger.warning(msg)
     print(f"clip EMA: {args.clip_frac_ema:.4f}, q90: {getattr(args, 'q90', 0.0):.4f}, DP clip: {args.dp_clip:.4f}, noise std: {noise_std:.4f}, eps: {epsilon or 0.0:.4f}")
     logger.info(
         'DP clip %.4f, clip EMA %.4f, q90 %.4f, noise std %.4f, eps %.4f',

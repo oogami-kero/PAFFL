@@ -222,12 +222,15 @@ def get_args():
     parser.add_argument('--use_transform_layer', type=int, default=0,
                         help='enable personalized transformation layer')
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
+    parser.add_argument('--dp_clip_min', type=float, default=1.2, help='minimum DP-SGD clipping norm')
+    parser.add_argument('--dp_clip_max', type=float, default=6.0, help='maximum DP-SGD clipping norm')
+    parser.add_argument('--dp_clip_step_cap', type=float, default=0.10,
+                        help='limit relative DP clip change per round')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     parser.add_argument('--dp_noise_scale', type=float, default=0.1, help='additional scaling for DP noise')
     parser.add_argument('--dp_noise_clip_ratio', type=float, default=None,
                         help='cap noise std to this fraction of the clip bound')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
-    parser.add_argument('--dp_clip_max', type=float, default=20.0, help='maximum DP-SGD clipping norm')
     parser.add_argument('--dp_warmup_batches', type=int, default=0, help='warm-up batches for DP clip calibration')
     parser.add_argument('--dp_target_clip_fraction', type=float, default=0.1,
                         help='target fraction of clients to be clipped')
@@ -237,7 +240,8 @@ def get_args():
     parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
     parser.add_argument('--use_amp', action='store_true', help='enable mixed precision training')
     args = parser.parse_args()
-    args.dp_clip = min(args.dp_clip, args.dp_clip_max)
+    args.dp_clip_max = max(args.dp_clip_max, args.dp_clip_min)
+    args.dp_clip = max(args.dp_clip_min, min(args.dp_clip, args.dp_clip_max))
     args.log_dp_clip = math.log(max(1.0, args.dp_clip))
     return args
 
@@ -367,7 +371,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         norms = collect_grad_norms(base_model, warm_loader, dp_optimizer, args.dp_warmup_batches, args.device)
         if norms:
             new_clip = float(np.percentile(norms, 90))
-            args.dp_clip = min(new_clip, args.dp_clip_max)
+            args.dp_clip_max = max(args.dp_clip_max, math.ceil(max(6.0, 1.5 * new_clip)))
+            args.dp_clip = max(args.dp_clip_min, min(new_clip, args.dp_clip_max))
             args.log_dp_clip = math.log(max(1.0, args.dp_clip))
             args.dp_clip_calibrated = True
             print(f'warm-up DP clip: {args.dp_clip:.4f}')
@@ -825,7 +830,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
         if args.dp_mode == 'local' and args.grad_norms_ma:
             new_clip = float(np.percentile(list(args.grad_norms_ma.values()), 90))
-            args.dp_clip = min(new_clip, args.dp_clip_max)
+            args.dp_clip = max(args.dp_clip_min, min(new_clip, args.dp_clip_max))
+            args.log_dp_clip = math.log(max(1.0, args.dp_clip))
             print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}')
             logger.info('90th percentile %.4f, DP clip %.4f', new_clip, args.dp_clip)
         if np.random.rand() < 0.3:
