@@ -28,7 +28,7 @@ from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_spl
 
 warnings.filterwarnings('ignore')
 
-from collections import defaultdict
+from collections import defaultdict, deque
 
 fine_split=defaultdict(list)
 
@@ -931,7 +931,8 @@ def aggregate_deltas(
     """
     clipped = []
     clipped_count = 0
-    for delta in deltas.values():
+    norms = []
+    for cid, delta in deltas.items():
         flat = torch.cat([
             v.view(-1)
             for k, v in delta.items()
@@ -946,7 +947,8 @@ def aggregate_deltas(
                 )
             )
         ])
-        norm = torch.norm(flat)
+        norm = torch.norm(flat).item()
+        norms.append((cid, norm))
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
         if scale < 1.0:
             clipped_count += 1
@@ -954,6 +956,18 @@ def aggregate_deltas(
     num_clients = len(clipped) or 1
     args.last_clip_fraction = clipped_count / num_clients
     logging.info('Clipped fraction: %.4f', args.last_clip_fraction)
+    if not hasattr(args, 'grad_norm_histories'):
+        args.grad_norm_histories = {}
+    for cid, norm in norms:
+        hist = args.grad_norm_histories.setdefault(cid, deque(maxlen=200))
+        hist.append(norm)
+    percentiles, weights = [], []
+    weight_map = getattr(args, 'client_sizes', {})
+    for cid, hist in args.grad_norm_histories.items():
+        if hist:
+            percentiles.append(np.percentile(hist, 90))
+            weights.append(weight_map.get(cid, 1))
+    args.q90 = dp_utils.weighted_median(percentiles, weights) if percentiles else args.dp_clip
     base_noise_std = args.dp_noise * args.dp_noise_scale / num_clients
     logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
     for key in global_w:
@@ -1163,72 +1177,7 @@ if __name__ == '__main__':
                     logger.info(
                         '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
             if args.dp_mode == 'server':
-                deltas, _, round_loss = local_train_net_few_shot(
-                    nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
-                )
-            else:
-                _, _, round_loss = local_train_net_few_shot(
-                    nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
-                )
-
-            logger.info('Round %d loss %.4f', round, round_loss)
-            print(f'Round {round} loss: {round_loss:.4f}')
-            if args.dp_mode == 'local':
-                dp_steps += args.num_train_tasks * len(participating_ids)
-            elif args.dp_mode == 'server':
-                dp_steps += 1
-            if args.dp_mode == 'server':
-                noise_multipliers = {name: args.dp_noise for name in global_w}
-                for name in noise_multipliers:
-                    if name.endswith('bias'):
-                        noise_multipliers[name] *= 0.5
-                aggregate_deltas(global_w, deltas, args, noise_multipliers)
-            else:
-                total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
-                fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
-                for net_id, client_id in enumerate(participating_ids):
-                    net = nets_this_round[client_id]
-                    net_para = net.state_dict()
-                    if net_id == 0:
-                        for key in net_para:
-                            if 'transform_layer' in key:
-                                continue
-                            global_w[key] = net_para[key] * fed_avg_freqs[net_id]
-                    else:
-                        for key in net_para:
-                            if 'transform_layer' in key:
-                                continue
-                            global_w[key] += net_para[key] * fed_avg_freqs[net_id]
-
-            if args.dp_mode != 'off':
-                epsilon = dp_utils.compute_epsilon(
-                    dp_steps,
-                    args.dp_noise,
-                    args.dp_delta,
-                    accountant=args.dp_accountant,
-                    sampling_rate=len(participating_ids) / args.n_parties,
-                )
-            if args.dp_mode == 'server':
-                old_clip, old_noise = args.dp_clip, args.dp_noise
-                decay = 0.9
-                if not hasattr(args, 'last_clip_fraction'):
-                    args.last_clip_fraction = args.dp_target_clip_fraction
-                if not hasattr(args, 'clip_frac_ema'):
-                    args.clip_frac_ema = args.last_clip_fraction
-                else:
-                    args.clip_frac_ema = decay * args.clip_frac_ema + (1 - decay) * args.last_clip_fraction
-                eta = 0.1
-                args.log_dp_clip += eta * (args.clip_frac_ema - args.dp_target_clip_fraction)
-                new_clip = float(math.exp(args.log_dp_clip))
-                new_clip = max(min(new_clip, old_clip * 1.1), old_clip * 0.9)
-                args.dp_clip = max(1.0, min(new_clip, args.dp_clip_max))
-                args.log_dp_clip = math.log(args.dp_clip)
-                args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
-                num_clients = len(deltas) or 1
-                noise_std = args.dp_noise * args.dp_noise_scale / num_clients
-                z = noise_std / args.dp_clip
-                print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
-                logger.info('clip EMA %.4f, DP clip %.4f, z %.4f', args.clip_frac_ema, args.dp_clip, z)
+                dp_utils.stabilize_adaptive_clip(args, epsilon or 0.0, len(deltas) or 1)
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:
