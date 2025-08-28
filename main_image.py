@@ -956,7 +956,9 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
     Noise is scaled by the number of participating clients to maintain the
     expected privacy budget regardless of the number of contributions. The
     fraction of client updates that were clipped is stored in
-    ``args.last_clip_fraction`` for adaptive clipping strategies.
+    ``args.last_clip_fraction`` for adaptive clipping strategies. Per-round
+    gradient norm percentiles are recorded in ``args.round_p50`` and
+    ``args.round_p90`` for use by adaptive clipping controllers.
 
     Args:
         global_w (dict): Global model weights to be updated.
@@ -990,7 +992,14 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         scales.append(scale)
         clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
-    args.last_clip_fraction = float(np.mean([s < 1.0 for s in scales])) if scales else 0.0
+    round_norms = [n for _, n in norms]
+    round_p50 = float(np.percentile(round_norms, 50)) if round_norms else 0.0
+    round_p90 = float(np.percentile(round_norms, 90)) if round_norms else 0.0
+    frac_now = float(np.mean([n > args.dp_clip for n in round_norms])) if round_norms else 0.0
+    args.round_p50 = round_p50
+    args.round_p90 = round_p90
+    args.frac_now = frac_now
+    args.last_clip_fraction = frac_now
     logging.info('Clipped fraction: %.4f', args.last_clip_fraction)
     if not hasattr(args, 'grad_norm_histories'):
         args.grad_norm_histories = {}
@@ -1264,7 +1273,14 @@ if __name__ == '__main__':
                     sampling_rate=len(participating_ids) / args.n_parties,
                 )
             if args.dp_mode == 'server':
-                dp_utils.stabilize_adaptive_clip(args, epsilon or 0.0, len(deltas) or 1)
+                dp_utils.stabilize_adaptive_clip(
+                    args,
+                    epsilon or 0.0,
+                    len(deltas) or 1,
+                    args.round_p90,
+                    round_p50=args.round_p50,
+                    frac_now=args.frac_now,
+                )
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:

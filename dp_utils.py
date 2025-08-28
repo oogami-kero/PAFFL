@@ -190,7 +190,15 @@ def weighted_median(values, weights):
     return float(values[cdf >= cutoff][0])
 
 
-def stabilize_adaptive_clip(args, epsilon, num_clients, logger=logging):
+def stabilize_adaptive_clip(
+    args,
+    epsilon,
+    num_clients,
+    round_p90,
+    round_p50=None,
+    frac_now=None,
+    logger=logging,
+):
     '''Update the DP-SGD clipping bound using a stabilized controller.
 
     Parameters
@@ -202,6 +210,12 @@ def stabilize_adaptive_clip(args, epsilon, num_clients, logger=logging):
         Current cumulative privacy loss.
     num_clients : int
         Number of participating clients in the current round.
+    round_p90 : float
+        90th percentile of gradient norms from the current round.
+    round_p50 : float, optional
+        Median of gradient norms from the current round.
+    frac_now : float, optional
+        Fraction of client norms exceeding the clipping bound.
     logger : logging.Logger, optional
         Logger used for reporting statistics.
 
@@ -210,6 +224,10 @@ def stabilize_adaptive_clip(args, epsilon, num_clients, logger=logging):
     float
         Updated clipping bound.
     '''
+    if round_p50 is not None:
+        args.round_p50 = round_p50
+    if frac_now is not None:
+        args.frac_now = frac_now
     p_t = max(0.02, min(0.98, getattr(args, 'last_clip_fraction', 0.0)))
     if not hasattr(args, 'clip_frac_ema'):
         args.clip_frac_ema = p_t
@@ -225,8 +243,8 @@ def stabilize_adaptive_clip(args, epsilon, num_clients, logger=logging):
     else:
         log_c = math.log(args.dp_clip)
         log_ctrl = log_c + 0.05 * (args.clip_frac_ema - target)
-        q90 = max(getattr(args, 'q90', args.dp_clip), 1e-12)
-        log_perc = 0.9 * log_c + 0.1 * math.log(q90)
+        perc = max(round_p90, 1e-12)
+        log_perc = 0.9 * log_c + 0.1 * math.log(perc)
         log_blend = 0.5 * log_ctrl + 0.5 * log_perc
         cand = math.exp(log_blend)
         step = getattr(args, 'dp_clip_step_cap', 0.10)
@@ -250,12 +268,15 @@ def stabilize_adaptive_clip(args, epsilon, num_clients, logger=logging):
         )
         print(f'WARNING: {msg}')
         logger.warning(msg)
-    print(f"clip EMA: {args.clip_frac_ema:.4f}, q90: {getattr(args, 'q90', 0.0):.4f}, DP clip: {args.dp_clip:.4f}, noise std: {noise_std:.4f}, eps: {epsilon or 0.0:.4f}")
+    print(
+        f"clip EMA: {args.clip_frac_ema:.4f}, hist q90: {getattr(args, 'q90', 0.0):.4f}, round p90: {round_p90:.4f}, DP clip: {args.dp_clip:.4f}, noise std: {noise_std:.4f}, eps: {epsilon or 0.0:.4f}"
+    )
     logger.info(
-        'DP clip %.4f, clip EMA %.4f, q90 %.4f, noise std %.4f, eps %.4f',
+        'DP clip %.4f, clip EMA %.4f, hist q90 %.4f, round p90 %.4f, noise std %.4f, eps %.4f',
         args.dp_clip,
         args.clip_frac_ema,
         getattr(args, 'q90', 0.0),
+        round_p90,
         noise_std,
         epsilon or 0.0,
     )
