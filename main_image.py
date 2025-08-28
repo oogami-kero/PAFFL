@@ -113,6 +113,23 @@ def InforNCE_Loss(anchor, sample, tau, all_negative=False, temperature_matrix=No
 
     return -loss.mean(), sim
 
+
+def collect_grad_norms(model, data_loader, optimizer, steps, device):
+    '''Collect gradient norms over a number of warm-up batches without clipping.'''
+    norms = []
+    model.train()
+    for i, (x, y) in enumerate(data_loader):
+        if i >= steps:
+            break
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+        out = model(x)
+        loss = F.cross_entropy(out, y)
+        loss.backward()
+        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf'))
+        norms.append(norm.item())
+    return norms
+
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default='resnet12', help='neural network used in training')
@@ -209,6 +226,7 @@ def get_args():
     parser.add_argument('--dp_noise_scale', type=float, default=0.1, help='additional scaling for DP noise')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
     parser.add_argument('--dp_clip_max', type=float, default=20.0, help='maximum DP-SGD clipping norm')
+    parser.add_argument('--dp_warmup_batches', type=int, default=0, help='warm-up batches for DP clip calibration')
     parser.add_argument('--dp_target_clip_fraction', type=float, default=0.1,
                         help='target fraction of clients to be clipped')
     parser.add_argument('--dp_mode', choices=['local', 'server', 'off'], default='server')
@@ -337,6 +355,23 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     N, K, Q = get_n_k_q(args, mode='train', fewrel_multiplier=3)
     total_batch = N * K + N * Q
     sample_rate = total_batch / client_sample_size
+
+    if args.dp_mode == 'local' and args.dp_warmup_batches > 0 and dp_params and not getattr(args, 'dp_clip_calibrated', False):
+        warm_loader = DataLoader(
+            TensorDataset(torch.tensor(X_train_client), torch.tensor(y_train_client)),
+            batch_size=total_batch,
+            shuffle=True,
+        )
+        norms = collect_grad_norms(base_model, warm_loader, dp_optimizer, args.dp_warmup_batches, args.device)
+        if norms:
+            new_clip = float(np.percentile(norms, 90))
+            args.dp_clip = min(new_clip, args.dp_clip_max)
+            args.log_dp_clip = math.log(max(1.0, args.dp_clip))
+            args.dp_clip_calibrated = True
+            print(f'warm-up DP clip: {args.dp_clip:.4f}')
+        base_model.load_state_dict(model_template.state_dict())
+        dp_optimizer.zero_grad()
+        head_optimizer.zero_grad()
 
     privacy_engine = None
     if args.dp_mode == 'local' and dp_params:
