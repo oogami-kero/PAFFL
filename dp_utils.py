@@ -1,4 +1,6 @@
 import math
+import logging
+import numpy as np
 from opacus.grad_sample import GradSampleModule
 
 
@@ -173,3 +175,72 @@ def find_noise_multiplier(
         if abs(eps - target_eps) <= tol:
             break
     return hi
+
+def weighted_median(values, weights):
+    '''Return the weighted median of ``values`` with corresponding ``weights``.'''
+    if not values:
+        return 0.0
+    values = np.asarray(values)
+    weights = np.asarray(weights)
+    order = np.argsort(values)
+    values = values[order]
+    weights = weights[order]
+    cdf = np.cumsum(weights)
+    cutoff = 0.5 * cdf[-1]
+    return float(values[cdf >= cutoff][0])
+
+
+def stabilize_adaptive_clip(args, epsilon, num_clients, logger=logging):
+    '''Update the DP-SGD clipping bound using a stabilized controller.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Namespace holding DP-related state such as dp_clip and
+        last_clip_fraction. This function updates dp_clip in-place.
+    epsilon : float
+        Current cumulative privacy loss.
+    num_clients : int
+        Number of participating clients in the current round.
+    logger : logging.Logger, optional
+        Logger used for reporting statistics.
+
+    Returns
+    -------
+    float
+        Updated clipping bound.
+    '''
+    p_t = max(0.02, min(0.98, getattr(args, 'last_clip_fraction', 0.0)))
+    if not hasattr(args, 'clip_frac_ema'):
+        args.clip_frac_ema = p_t
+    else:
+        args.clip_frac_ema = 0.95 * args.clip_frac_ema + 0.05 * p_t
+    target = getattr(args, 'dp_target_clip_fraction', 0.1)
+    if abs(args.clip_frac_ema - target) <= 0.05:
+        args.deadband_ctr = getattr(args, 'deadband_ctr', 0) + 1
+    else:
+        args.deadband_ctr = 0
+    if getattr(args, 'deadband_ctr', 0) >= 3:
+        new_clip = args.dp_clip
+    else:
+        log_c = math.log(args.dp_clip)
+        log_ctrl = log_c + 0.05 * (args.clip_frac_ema - target)
+        q90 = max(getattr(args, 'q90', args.dp_clip), 1e-12)
+        log_perc = 0.9 * log_c + 0.1 * math.log(q90)
+        log_blend = 0.5 * log_ctrl + 0.5 * log_perc
+        cand = math.exp(log_blend)
+        cand = max(0.9 * args.dp_clip, min(1.1 * args.dp_clip, cand))
+        new_clip = min(max(cand, 1.2), 5.0)
+    args.dp_clip = new_clip
+    args.log_dp_clip = math.log(args.dp_clip)
+    noise_std = args.dp_noise * args.dp_noise_scale / num_clients
+    print(f"clip EMA: {args.clip_frac_ema:.4f}, q90: {getattr(args, 'q90', 0.0):.4f}, DP clip: {args.dp_clip:.4f}, noise std: {noise_std:.4f}, eps: {epsilon or 0.0:.4f}")
+    logger.info(
+        'DP clip %.4f, clip EMA %.4f, q90 %.4f, noise std %.4f, eps %.4f',
+        args.dp_clip,
+        args.clip_frac_ema,
+        getattr(args, 'q90', 0.0),
+        noise_std,
+        epsilon or 0.0,
+    )
+    return args.dp_clip
