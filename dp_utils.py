@@ -210,11 +210,16 @@ def stabilize_adaptive_clip(args, epsilon, num_clients, logger=logging):
     float
         Updated clipping bound.
     '''
-    p_t = max(0.02, min(0.98, getattr(args, 'last_clip_fraction', 0.0)))
+    p_raw = getattr(args, 'last_clip_fraction', 0.0)
     if not hasattr(args, 'clip_frac_ema'):
-        args.clip_frac_ema = p_t
+        args.clip_frac_ema = p_raw
+        args.clip_rounds = 1
     else:
-        args.clip_frac_ema = 0.95 * args.clip_frac_ema + 0.05 * p_t
+        args.clip_rounds = getattr(args, 'clip_rounds', 0) + 1
+        p_t = max(1e-6, min(1.0 - 1e-6, p_raw))
+        beta = 0.8 if args.clip_rounds < 5 else 0.95
+        args.clip_frac_ema = beta * args.clip_frac_ema + (1.0 - beta) * p_t
+        args.clip_frac_ema = max(1e-6, min(1.0 - 1e-6, args.clip_frac_ema))
     target = getattr(args, 'dp_target_clip_fraction', 0.1)
     if abs(args.clip_frac_ema - target) <= 0.05:
         args.deadband_ctr = getattr(args, 'deadband_ctr', 0) + 1
