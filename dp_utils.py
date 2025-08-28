@@ -228,6 +228,8 @@ def stabilize_adaptive_clip(
         args.round_p50 = round_p50
     if frac_now is not None:
         args.frac_now = frac_now
+    frac_now = getattr(args, 'frac_now', None)
+    p_raw = frac_now if frac_now is not None else getattr(args, 'last_clip_fraction', 0.0)
     p_t = max(0.02, min(0.98, getattr(args, 'last_clip_fraction', 0.0)))
     if not hasattr(args, 'clip_frac_ema'):
         args.clip_frac_ema = p_raw
@@ -253,6 +255,11 @@ def stabilize_adaptive_clip(
         log_blend = 0.5 * log_ctrl + 0.5 * log_perc
         cand = math.exp(log_blend)
         step = getattr(args, 'dp_clip_step_cap', 0.10)
+        if frac_now is not None:
+            if frac_now > 0.95:
+                step *= 1.5
+            elif frac_now > 0.70:
+                step *= 1.25
         low_step = args.dp_clip * (1.0 - step)
         high_step = args.dp_clip * (1.0 + step)
         cand = max(low_step, min(high_step, cand))
@@ -261,6 +268,12 @@ def stabilize_adaptive_clip(
         new_clip = max(dp_min, min(dp_max, cand))
     args.dp_clip = new_clip
     args.log_dp_clip = math.log(args.dp_clip)
+    if args.dp_clip >= 0.98 * getattr(args, 'dp_clip_max', args.dp_clip) and (frac_now or 0.0) > 0.7:
+        old_max = getattr(args, 'dp_clip_max', args.dp_clip)
+        args.dp_clip_max = old_max * 1.5
+        msg = f'Increasing dp_clip_max from {old_max:.4f} to {args.dp_clip_max:.4f} for headroom.'
+        print(msg)
+        logger.info(msg)
     noise_std = args.dp_noise * args.dp_noise_scale / num_clients
     if getattr(args, 'last_clip_fraction', 0.0) > 0.95:
         args.saturation_ctr = getattr(args, 'saturation_ctr', 0) + 1
