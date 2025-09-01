@@ -273,12 +273,16 @@ class ResNet(nn.Module):
         return x
 
 
-def resnet12(keep_prob=1.0, avg_pool=False, drop_rate=0.0,**kwargs):
+def resnet12(keep_prob=1.0, avg_pool=False, drop_rate=0.0, dp_mode='off', **kwargs):
     """Constructs a ResNet-12 model.
+
+    BatchNorm layers are converted and validated for differential privacy when
+    ``dp_mode`` is not ``'off'``.
     """
     model = ResNet(BasicBlock, keep_prob=keep_prob, avg_pool=avg_pool, drop_rate=drop_rate, **kwargs)
-    model = convert_batchnorm_modules(model)
-    ModuleValidator.validate(model, strict=True)
+    if dp_mode != 'off':
+        model = convert_batchnorm_modules(model)
+        ModuleValidator.validate(model, strict=True)
     return model
 
 
@@ -808,15 +812,17 @@ class ModerateCNNContainer(nn.Module):
 
 class ModelFedCon(nn.Module):
 
-    def __init__(self, base_model, out_dim, n_classes, net_configs=None):
+    def __init__(self, base_model, out_dim, n_classes, net_configs=None, args=None):
         super(ModelFedCon, self).__init__()
 
+        dp_mode = getattr(args, 'dp_mode', 'off')
+
         if base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel" or base_model == "resnet50":
-            basemodel = ResNet50_cifar10()
+            basemodel = ResNet50_cifar10(dp_mode=dp_mode)
             self.features = nn.Sequential(*list(basemodel.children())[:-1])
             num_ftrs = basemodel.fc.in_features
         elif base_model == "resnet18-cifar10" or base_model == "resnet18":
-            basemodel = ResNet18_cifar10()
+            basemodel = ResNet18_cifar10(dp_mode=dp_mode)
             self.features = nn.Sequential(*list(basemodel.children())[:-1])
             num_ftrs = basemodel.fc.in_features
         elif base_model == "mlp":
@@ -862,8 +868,10 @@ class ModelFedCon(nn.Module):
 
 class ModelFedCon_noheader(nn.Module):
 
-    def __init__(self, base_model, out_dim, n_classes, net_configs=None):
+    def __init__(self, base_model, out_dim, n_classes, net_configs=None, args=None):
         super(ModelFedCon_noheader, self).__init__()
+
+        dp_mode = getattr(args, 'dp_mode', 'off')
 
         if base_model == "resnet50":
             basemodel = models.resnet50(pretrained=False)
@@ -874,11 +882,11 @@ class ModelFedCon_noheader(nn.Module):
             self.features = nn.Sequential(*list(basemodel.children())[:-1])
             num_ftrs = basemodel.fc.in_features
         elif base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel":
-            basemodel = ResNet50_cifar10()
+            basemodel = ResNet50_cifar10(dp_mode=dp_mode)
             self.features = nn.Sequential(*list(basemodel.children())[:-1])
             num_ftrs = basemodel.fc.in_features
         elif base_model == "resnet18-cifar10":
-            basemodel = ResNet18_cifar10()
+            basemodel = ResNet18_cifar10(dp_mode=dp_mode)
             self.features = nn.Sequential(*list(basemodel.children())[:-1])
             num_ftrs = basemodel.fc.in_features
         elif base_model == "mlp":
@@ -933,12 +941,14 @@ class ModelFed_Adp(nn.Module):
         else:
             self.transform_layer = None
 
+        dp_mode = getattr(args, 'dp_mode', 'off')
+
         if base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel" or base_model == "resnet50":
-            basemodel = ResNet50_cifar10()
+            basemodel = ResNet50_cifar10(dp_mode=dp_mode)
             self.features = nn.Sequential(*list(basemodel.children())[:-1])
             num_ftrs = basemodel.fc.in_features
         elif base_model == "resnet18-cifar10" or base_model == "resnet18":
-            basemodel = ResNet18_cifar10()
+            basemodel = ResNet18_cifar10(dp_mode=dp_mode)
             self.features = nn.Sequential(*list(basemodel.children())[:-1])
             num_ftrs = basemodel.fc.in_features
         elif base_model == "mlp":
@@ -954,11 +964,11 @@ class ModelFed_Adp(nn.Module):
         elif base_model == 'resnet12':
 
             if args.dataset=='FC100':
-                self.features = resnet12(avg_pool=True, drop_rate=0.1, dropblock_size=2)
+                self.features = resnet12(avg_pool=True, drop_rate=0.1, dropblock_size=2, dp_mode=dp_mode)
                 #num_ftrs=2560
                 num_ftrs=640
             else:
-                self.features = resnet12(avg_pool=True, drop_rate=0.1)
+                self.features = resnet12(avg_pool=True, drop_rate=0.1, dp_mode=dp_mode)
                 #num_ftrs = 16000
                 num_ftrs = 640
 
