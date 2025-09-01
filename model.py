@@ -277,12 +277,13 @@ def resnet12(keep_prob=1.0, avg_pool=False, drop_rate=0.0, dp_mode='off', **kwar
     """Constructs a ResNet-12 model.
 
     BatchNorm layers are converted and validated for differential privacy when
-    ``dp_mode`` is not ``'off'``.
+    ``dp_mode`` is ``'local'``.
     """
     model = ResNet(BasicBlock, keep_prob=keep_prob, avg_pool=avg_pool, drop_rate=drop_rate, **kwargs)
     if dp_mode != 'off':
-        model = convert_batchnorm_modules(model)
-        ModuleValidator.validate(model, strict=True)
+        model = convert_batchnorm_modules(model, dp_mode)
+        if dp_mode == 'local':
+            ModuleValidator.validate(model, strict=True)
     return model
 
 
