@@ -212,13 +212,14 @@ def ResNet18_cifar10(dp_mode='off', **kwargs):
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
-        dp_mode (str): Differential privacy mode; when not ``'off'`` BatchNorm
+        dp_mode (str): Differential privacy mode; when ``'local'`` BatchNorm
             layers are converted and validated for DP.
     """
     model = ResNetCifar10(BasicBlock, [2, 2, 2, 2], **kwargs)
     if dp_mode != 'off':
-        model = convert_batchnorm_modules(model)
-        ModuleValidator.validate(model, strict=True)
+        model = convert_batchnorm_modules(model, dp_mode)
+        if dp_mode == 'local':
+            ModuleValidator.validate(model, strict=True)
     return model
 
 
@@ -230,11 +231,12 @@ def ResNet50_cifar10(dp_mode='off', **kwargs):
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
-        dp_mode (str): Differential privacy mode; when not ``'off'`` BatchNorm
+        dp_mode (str): Differential privacy mode; when ``'local'`` BatchNorm
             layers are converted and validated for DP.
     """
     model = ResNetCifar10(Bottleneck, [3, 4, 6, 3], **kwargs)
     if dp_mode != 'off':
-        model = convert_batchnorm_modules(model)
-        ModuleValidator.validate(model, strict=True)
+        model = convert_batchnorm_modules(model, dp_mode)
+        if dp_mode == 'local':
+            ModuleValidator.validate(model, strict=True)
     return model
