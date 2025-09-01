@@ -1143,6 +1143,33 @@ if __name__ == '__main__':
             elif args.dp_mode == 'server':
                 dp_steps += 1
             if args.dp_mode == 'server':
+                old_clip, old_noise = args.dp_clip, args.dp_noise
+                decay = 0.9
+                if not hasattr(args, 'clip_frac_ema'):
+                    args.clip_frac_ema = args.last_clip_fraction
+                else:
+                    args.clip_frac_ema = decay * args.clip_frac_ema + (1 - decay) * args.last_clip_fraction
+                eta = 0.1
+                args.log_dp_clip += eta * (args.clip_frac_ema - args.dp_target_clip_fraction)
+                new_clip = float(math.exp(args.log_dp_clip))
+                new_clip = max(min(new_clip, old_clip * 1.1), old_clip * 0.9)
+                args.dp_clip = max(1.0, min(new_clip, args.dp_clip_max))
+                args.log_dp_clip = math.log(args.dp_clip)
+                args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
+                num_clients = len(deltas) or 1
+                noise_std = args.dp_noise * args.dp_noise_scale / num_clients
+                z = noise_std / args.dp_clip
+                print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
+                logger.info('clip EMA %.4f, DP clip %.4f, z %.4f', args.clip_frac_ema, args.dp_clip, z)
+            if args.dp_mode != 'off':
+                epsilon = dp_utils.compute_epsilon(
+                    dp_steps,
+                    args.dp_noise,
+                    args.dp_delta,
+                    accountant=args.dp_accountant,
+                    sampling_rate=len(participating_ids) / args.n_parties,
+                )
+            if args.dp_mode == 'server':
                 noise_multipliers = {name: args.dp_noise for name in global_w}
                 for name in noise_multipliers:
                     if name.endswith('bias'):
@@ -1165,35 +1192,6 @@ if __name__ == '__main__':
                                 continue
                             global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
-            if args.dp_mode != 'off':
-                epsilon = dp_utils.compute_epsilon(
-                    dp_steps,
-                    args.dp_noise,
-                    args.dp_delta,
-                    accountant=args.dp_accountant,
-                    sampling_rate=len(participating_ids) / args.n_parties,
-                )
-            if args.dp_mode == 'server':
-                old_clip, old_noise = args.dp_clip, args.dp_noise
-                decay = 0.9
-                if not hasattr(args, 'last_clip_fraction'):
-                    args.last_clip_fraction = args.dp_target_clip_fraction
-                if not hasattr(args, 'clip_frac_ema'):
-                    args.clip_frac_ema = args.last_clip_fraction
-                else:
-                    args.clip_frac_ema = decay * args.clip_frac_ema + (1 - decay) * args.last_clip_fraction
-                eta = 0.1
-                args.log_dp_clip += eta * (args.clip_frac_ema - args.dp_target_clip_fraction)
-                new_clip = float(math.exp(args.log_dp_clip))
-                new_clip = max(min(new_clip, old_clip * 1.1), old_clip * 0.9)
-                args.dp_clip = max(1.0, min(new_clip, args.dp_clip_max))
-                args.log_dp_clip = math.log(args.dp_clip)
-                args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
-                num_clients = len(deltas) or 1
-                noise_std = args.dp_noise * args.dp_noise_scale / num_clients
-                z = noise_std / args.dp_clip
-                print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
-                logger.info('clip EMA %.4f, DP clip %.4f, z %.4f', args.clip_frac_ema, args.dp_clip, z)
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:
