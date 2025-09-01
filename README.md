@@ -46,9 +46,6 @@ The repository now includes optional support for a **personalised transformation
   * `server`: clip and noise client updates on the server.
   * `off`: disable differential privacy.
   * `--dp_clip`: clipping norm (default `1.0`)
-  * `--dp_clip_min`: lower bound for adaptive clipping (default `1.2`)
-  * `--dp_clip_max`: upper bound for adaptive clipping (default `6.0`; when warm-up is used it becomes `round_up(max(6.0, 1.5 * warmup_p90))`)
-  * `--dp_clip_step_cap`: limit per-round clip changes to this fraction (default `0.10`)
   * `--dp_noise`: noise multiplier
   * `--dp_noise_clip_ratio`: cap noise standard deviation to this fraction of the clip bound
   * `--dp_delta`: target delta for privacy accounting (default `1e-5`)
