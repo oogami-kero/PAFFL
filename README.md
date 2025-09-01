@@ -49,7 +49,6 @@ The repository now includes optional support for a **personalised transformation
   * `--dp_noise`: noise multiplier
   * `--dp_delta`: target delta for privacy accounting (default `1e-5`)
   * `--print_eps`: output the current ε after each communication round when set to `1`
-  * `--dp_warmup_batches`: run this many unclipped batches to calibrate `dp_clip` (90th percentile of gradient norms)
   * `--dp_target_clip_fraction`: desired fraction of client updates to clip (default `0.1`)
 
 Examples:
@@ -65,9 +64,6 @@ python main_image.py --dataset miniImageNet --dp_mode off
 python main_image.py --dataset miniImageNet --server_momentum 0.9 --server_lr 0.1
 ```
 When `--print_eps 1`, the current ε and δ are printed after each round.
-
-The scripts can optionally calibrate the initial clipping bound. When `--dp_warmup_batches` is greater than zero, a short warm-up
-phase runs without clipping, collects gradient norms, and sets `--dp_clip` to their 90th percentile before enabling DP-SGD.
 
 * Enable server momentum with `--server_momentum <m>` and set the server learning rate with `--server_lr <lr>` to use FedAvgM for faster convergence. A good starting point is `lr ≈ 1 - m`.
 * Configure learning rate schedules with `--lr_schedule` and `--lr_decay`. Only `cosine` is currently supported. A suggested starting point is:
