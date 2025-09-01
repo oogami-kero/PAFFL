@@ -224,8 +224,6 @@ def get_args():
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     parser.add_argument('--dp_noise_scale', type=float, default=0.1, help='additional scaling for DP noise')
-    parser.add_argument('--dp_noise_clip_ratio', type=float, default=None,
-                        help='cap noise std to this fraction of the clip bound')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
     parser.add_argument('--dp_clip_max', type=float, default=20.0, help='maximum DP-SGD clipping norm')
     parser.add_argument('--dp_warmup_batches', type=int, default=0, help='warm-up batches for DP clip calibration')
@@ -1258,18 +1256,12 @@ if __name__ == '__main__':
                 new_clip = max(min(new_clip, old_clip * 1.1), old_clip * 0.9)
                 args.dp_clip = max(1.0, min(new_clip, args.dp_clip_max))
                 args.log_dp_clip = math.log(args.dp_clip)
+                args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
                 num_clients = len(deltas) or 1
-                if args.dp_noise_clip_ratio is not None:
-                    max_std = args.dp_noise_clip_ratio * args.dp_clip
-                    noise_std = min(old_noise * args.dp_noise_scale / num_clients, max_std)
-                    args.dp_noise = noise_std * num_clients / args.dp_noise_scale
-                else:
-                    args.dp_noise = old_noise
-                    noise_std = args.dp_noise * args.dp_noise_scale / num_clients
+                noise_std = args.dp_noise * args.dp_noise_scale / num_clients
                 z = noise_std / args.dp_clip
-                print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, noise std: {noise_std:.4f}, z: {z:.4f}')
-                logger.info('clip EMA %.4f, DP clip %.4f, noise std %.4f, z %.4f',
-                            args.clip_frac_ema, args.dp_clip, noise_std, z)
+                print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
+                logger.info('clip EMA %.4f, DP clip %.4f, z %.4f', args.clip_frac_ema, args.dp_clip, z)
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:
