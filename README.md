@@ -38,9 +38,6 @@ Note that the text model requires the GloVe embedding file named 'glove.42B.300d
 The repository now includes optional support for a **personalised transformation layer** and **differential privacy** with a privacy accountant.
 
 * Enable the transformation layer with `--use_transform_layer 1`. Each client learns its own affine layer `T_k(x) = α ⊙ x + β` that is excluded from model aggregation.
-* Adjust the contrastive loss temperature with `--temperature` (recommended range 0.7–1.0).
-* Interleave cross-entropy and contrastive episodes during training via `--mix_ce_ratio`.
-* Apply L2-SP regularization during fine-tuning with `--l2sp_lambda`.
 * Differential privacy is controlled solely via `--dp_mode` (the deprecated `--use_dp` flag has been removed). DP-specific options are ignored when `--dp_mode off`:
   * `local` (default): apply DP-SGD on each client.
   * `server`: clip and noise client updates on the server.
