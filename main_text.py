@@ -925,10 +925,8 @@ def aggregate_deltas(
     Noise is scaled by the number of participating clients. When
     ``noise_multipliers`` is provided, parameter-specific multipliers are applied
     on top of the base noise multiplier ``args.dp_noise``. The fraction of
-    client updates that were clipped is stored in ``args.last_clip_fraction`` for
-    adaptive clipping strategies. Per-round gradient norm percentiles are
-    recorded in ``args.round_p50`` and ``args.round_p90`` for use by adaptive
-    controllers.
+    client updates that were clipped is stored in
+    ``args.last_clip_fraction`` for adaptive clipping strategies.
 
     Args:
         global_w (dict): Global model weights to be updated.
@@ -938,6 +936,7 @@ def aggregate_deltas(
         reset_bn (bool, optional): Reset BatchNorm statistics after aggregation.
     """
     clipped = []
+    clipped_count = 0
     norms = []
     for cid, delta in deltas.items():
         flat = torch.cat([
@@ -957,16 +956,11 @@ def aggregate_deltas(
         norm = torch.norm(flat).item()
         norms.append((cid, norm))
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
+        if scale < 1.0:
+            clipped_count += 1
         clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
-    round_norms = [n for _, n in norms]
-    round_p50 = float(np.percentile(round_norms, 50)) if round_norms else 0.0
-    round_p90 = float(np.percentile(round_norms, 90)) if round_norms else 0.0
-    frac_now = float(np.mean([n > args.dp_clip for n in round_norms])) if round_norms else 0.0
-    args.round_p50 = round_p50
-    args.round_p90 = round_p90
-    args.frac_now = frac_now
-    args.last_clip_fraction = frac_now
+    args.last_clip_fraction = clipped_count / num_clients
     logging.info('Clipped fraction: %.4f', args.last_clip_fraction)
     if not hasattr(args, 'grad_norm_histories'):
         args.grad_norm_histories = {}
@@ -1189,14 +1183,7 @@ if __name__ == '__main__':
                     logger.info(
                         '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
             if args.dp_mode == 'server':
-                dp_utils.stabilize_adaptive_clip(
-                    args,
-                    epsilon or 0.0,
-                    len(deltas) or 1,
-                    args.round_p90,
-                    round_p50=args.round_p50,
-                    frac_now=args.frac_now,
-                )
+                dp_utils.stabilize_adaptive_clip(args, epsilon or 0.0, len(deltas) or 1)
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:
