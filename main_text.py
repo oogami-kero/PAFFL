@@ -281,13 +281,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     client_sample_size = len(y_train_client)
 
     dp_named_params = [
-        (n, p)
-        for n, p in base_model.named_parameters()
-        if 'transform_layer' not in n
-        and 'few_classify' not in n
-        and 'transformer' not in n
-        and 'all_classify' not in n
-        and p.requires_grad
+        (n, p) for n, p in base_model.named_parameters()
+        if 'transform_layer' not in n and 'few_classify' not in n and 'transformer' not in n and p.requires_grad
     ]
     dp_params = [p for _, p in dp_named_params]
     head_params = list(base_model.few_classify.parameters())
@@ -352,13 +347,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         dp_optimizer.sample_rate = sample_rate
         dp_optimizer.expected_batch_size = total_batch
     dp_named_params = [
-        (n, p)
-        for n, p in gmodel.named_parameters()
-        if 'transform_layer' not in n
-        and 'few_classify' not in n
-        and 'transformer' not in n
-        and 'all_classify' not in n
-        and p.requires_grad
+        (n, p) for n, p in gmodel.named_parameters()
+        if 'transform_layer' not in n and 'few_classify' not in n and 'transformer' not in n and p.requires_grad
     ]
     if not hasattr(args, 'grad_norms_ma'):
         args.grad_norms_ma = {}
@@ -889,7 +879,6 @@ def aggregate_deltas(
                     'running_var',
                     'num_batches_tracked',
                     'few_classify',
-                    'all_classify',
                     'transform_layer',
                 )
             )
@@ -898,20 +887,14 @@ def aggregate_deltas(
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
         if scale < 1.0:
             clipped_count += 1
-        clipped.append(
-            {
-                k: v * scale
-                for k, v in delta.items()
-                if 'few_classify' not in k and 'all_classify' not in k and 'transform_layer' not in k
-            }
-        )
+        clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
     args.last_clip_fraction = clipped_count / num_clients
     logging.info('Clipped fraction: %.4f', getattr(args, 'last_clip_fraction', args.dp_target_clip_fraction))
     base_noise_std = args.dp_noise * args.dp_noise_scale / num_clients
     logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
     for key in global_w:
-        if 'few_classify' in key or 'all_classify' in key:
+        if 'few_classify' in key:
             continue
         if any(s in key for s in ('running_mean', 'running_var', 'num_batches_tracked')):
             global_w[key] += torch.stack([d[key] for d in deltas.values()]).mean(0)
