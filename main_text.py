@@ -171,6 +171,8 @@ def get_args():
     parser.add_argument('--mu', type=float, default=1, help='the mu parameter for fedprox or moon')
     parser.add_argument('--out_dim', type=int, default=256, help='the output dimension for the projection layer')
     parser.add_argument('--temperature', type=float, default=0.5, help='the temperature parameter for contrastive loss')
+    parser.add_argument('--mix_ce_ratio', type=float, default=0.3, help='weight of cross-entropy loss')
+    parser.add_argument('--ce_scale', type=float, default=16.0, help='scale for cosine classifier logits')
     parser.add_argument('--local_max_epoch', type=int, default=100, help='the number of epoch for local optimal training')
     parser.add_argument('--model_buffer_size', type=int, default=1, help='store how many previous models for contrastive loss')
     parser.add_argument('--pool_option', type=str, default='FIFO', help='FIFO or BOX')
@@ -280,17 +282,20 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     client_sample_size = len(y_train_client)
 
+    local_ce = nn.Linear(base_model.few_classify.in_features, args.N, bias=False).to(device)
+
     dp_named_params = [
         (n, p)
         for n, p in base_model.named_parameters()
         if 'transform_layer' not in n
         and 'few_classify' not in n
+        and 'local_ce' not in n
         and 'transformer' not in n
         and 'all_classify' not in n
         and p.requires_grad
     ]
     dp_params = [p for _, p in dp_named_params]
-    head_params = list(base_model.few_classify.parameters())
+    head_params = list(base_model.few_classify.parameters()) + list(local_ce.parameters())
     tl_params = [p for n, p in base_model.named_parameters() if 'transform_layer' in n and p.requires_grad]
 
     if args_optimizer == 'adam':
@@ -356,6 +361,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         for n, p in gmodel.named_parameters()
         if 'transform_layer' not in n
         and 'few_classify' not in n
+        and 'local_ce' not in n
         and 'transformer' not in n
         and 'all_classify' not in n
         and p.requires_grad
@@ -442,7 +448,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 query_labels = query_labels.cuda()
     
             if mode == 'train':
-                loss_all=0
+                loss_contrastive = 0
                 if args.dataset=='FC100':
                     class_dict = fine_split['train']
                 elif args.dataset=='miniImageNet':
@@ -568,7 +574,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         for name, param in gmodel.named_parameters():
                             if 'transformer' in name:
                                 param.requires_grad_(False)
-                        X_out_all, _, _ = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=False)
+                        X_out_all, X_transformer_out_all, _ = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=False)
                         for name, param in gmodel.named_parameters():
                             if 'transformer' in name:
                                 param.requires_grad_(True)
@@ -580,7 +586,16 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             contras_loss, similarity = InforNCE_Loss(
                                 X_transformer_out_sup[j], out_sup[(j + 1) % Q], tau=0.5
                             )
-                            loss_all += contras_loss / Q * 0.1
+                            loss_contrastive += contras_loss / Q * 0.1
+
+                    ce_features = X_transformer_out_all[N * K:]
+                    emb = F.normalize(ce_features, dim=-1)
+                    W = F.normalize(local_ce.weight.t(), dim=0)
+                    logits = args.ce_scale * (emb @ W)
+                    loss_ce = F.cross_entropy(logits, query_labels, reduction='mean', label_smoothing=0.05)
+                    loss_all = loss_contrastive + args.mix_ce_ratio * loss_ce
+                else:
+                    loss_all = torch.tensor(0.0, device=local_ce.weight.device)
 
                 if use_amp:
                     scaler.scale(loss_all).backward()
@@ -590,7 +605,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         scaler.unscale_(tl_optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(gmodel.parameters(), max_norm)
                     last_loss = loss_all.item()
-                    print(f'contrastive loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
+                    print(f'loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
                     if torch.isnan(torch.tensor(grad_norm)) or torch.isnan(loss_all.detach()):
                         print('warning: NaN detected in loss or gradients')
                     if args.dp_mode == 'local':
@@ -609,7 +624,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     loss_all.backward()
                     grad_norm = torch.nn.utils.clip_grad_norm_(gmodel.parameters(), max_norm)
                     last_loss = loss_all.item()
-                    print(f'contrastive loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
+                    print(f'loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
                     if torch.isnan(torch.tensor(grad_norm)) or torch.isnan(loss_all.detach()):
                         print('warning: NaN detected in loss or gradients')
                     if args.dp_mode == 'local':
@@ -795,7 +810,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 delta = {
                     k: new_params[k] - prev_params[k]
                     for k in new_params
-                    if 'few_classify' not in k and 'transform_layer' not in k
+                    if 'few_classify' not in k and 'transform_layer' not in k and 'local_ce' not in k
                 }
                 deltas[net_id] = delta
                 flat = torch.cat([
@@ -809,6 +824,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                             'num_batches_tracked',
                             'few_classify',
                             'transform_layer',
+                            'local_ce',
                         )
                     )
                 ])
@@ -891,6 +907,7 @@ def aggregate_deltas(
                     'few_classify',
                     'all_classify',
                     'transform_layer',
+                    'local_ce',
                 )
             )
         ])
@@ -902,7 +919,7 @@ def aggregate_deltas(
             {
                 k: v * scale
                 for k, v in delta.items()
-                if 'few_classify' not in k and 'all_classify' not in k and 'transform_layer' not in k
+                if 'few_classify' not in k and 'all_classify' not in k and 'transform_layer' not in k and 'local_ce' not in k
             }
         )
     num_clients = len(clipped) or 1
@@ -911,7 +928,7 @@ def aggregate_deltas(
     base_noise_std = args.dp_noise * args.dp_noise_scale / num_clients
     logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
     for key in global_w:
-        if 'few_classify' in key or 'all_classify' in key:
+        if 'few_classify' in key or 'all_classify' in key or 'local_ce' in key:
             continue
         if any(s in key for s in ('running_mean', 'running_var', 'num_batches_tracked')):
             global_w[key] += torch.stack([d[key] for d in deltas.values()]).mean(0)
@@ -921,7 +938,7 @@ def aggregate_deltas(
                 else:
                     global_w[key].zero_()
             continue
-        if 'transform_layer' in key:
+        if 'transform_layer' in key or 'local_ce' in key:
             continue
         stacked = torch.stack([d[key] for d in clipped])
         avg_update = stacked.mean(dim=0)
