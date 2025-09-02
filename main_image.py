@@ -926,7 +926,11 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         if 'few_classify' in key:
             continue
         if any(s in key for s in ('running_mean', 'running_var', 'num_batches_tracked')):
-            global_w[key] += torch.stack([d[key] for d in deltas.values()]).mean(0)
+            if 'num_batches_tracked' in key:
+                continue
+            stacked = torch.stack([d[key].float() for d in deltas.values()])
+            avg = stacked.mean(0)
+            global_w[key] += avg if global_w[key].is_floating_point() else avg.long()
             if reset_bn:
                 if 'running_var' in key:
                     global_w[key].fill_(1.0)
