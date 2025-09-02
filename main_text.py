@@ -386,6 +386,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         ])
         X_transform_test = transform_test(normalize=normalize_mini)
 
+    loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
     result = None
     epsilon = None
@@ -558,7 +559,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         for name, param in gmodel.named_parameters():
                             if 'transformer' in name:
                                 param.requires_grad_(False)
-                        X_out_all, _, _ = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=False)
+                        X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
                         for name, param in gmodel.named_parameters():
                             if 'transformer' in name:
                                 param.requires_grad_(True)
@@ -567,10 +568,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         #############################
                         # Q=K here update for all-model
                         for j in range(Q):
-                            contras_loss, similarity = InforNCE_Loss(
-                                X_transformer_out_sup[j], out_sup[(j + 1) % Q], tau=0.5
-                            )
-                            loss_all += contras_loss / Q * 0.1
+                            contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q],
+                                                                     tau=0.5)
+                            loss_all += contras_loss / Q *0.1
+                        loss_all += loss_ce(out_all, y_total)
 
                 if use_amp:
                     scaler.scale(loss_all).backward()
@@ -580,7 +581,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         scaler.unscale_(tl_optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(gmodel.parameters(), max_norm)
                     last_loss = loss_all.item()
-                    print(f'contrastive loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
+                    print(f'batch loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
                     if torch.isnan(torch.tensor(grad_norm)) or torch.isnan(loss_all.detach()):
                         print('warning: NaN detected in loss or gradients')
                     if args.dp_mode == 'local':
@@ -599,7 +600,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     loss_all.backward()
                     grad_norm = torch.nn.utils.clip_grad_norm_(gmodel.parameters(), max_norm)
                     last_loss = loss_all.item()
-                    print(f'contrastive loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
+                    print(f'batch loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
                     if torch.isnan(torch.tensor(grad_norm)) or torch.isnan(loss_all.detach()):
                         print('warning: NaN detected in loss or gradients')
                     if args.dp_mode == 'local':
