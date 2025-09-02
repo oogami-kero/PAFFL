@@ -917,7 +917,7 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
     args.last_clip_fraction = float(np.mean([s < 1.0 for s in scales])) if scales else 0.0
-    logging.info('Clipped fraction: %.4f', args.last_clip_fraction)
+    logging.info('Clipped fraction: %.4f', getattr(args, 'last_clip_fraction', args.dp_target_clip_fraction))
     if scales:
         logging.info('Clipping scale stats - mean: %.4f max: %.4f', float(np.mean(scales)), float(np.max(scales)))
     base_noise_std = args.dp_noise * args.dp_noise_scale / num_clients
@@ -1085,6 +1085,7 @@ if __name__ == '__main__':
         no_improve = 0
 
         dp_steps = 0
+        args.last_clip_fraction = args.dp_target_clip_fraction
         for round in range(n_comm_rounds):
             #logger.info("in comm round:" + str(round))
             party_list_this_round = party_list_rounds[round]
@@ -1149,9 +1150,9 @@ if __name__ == '__main__':
                 old_clip, old_noise = args.dp_clip, args.dp_noise
                 decay = 0.9
                 if not hasattr(args, 'clip_frac_ema'):
-                    args.clip_frac_ema = args.last_clip_fraction
+                    args.clip_frac_ema = getattr(args, 'last_clip_fraction', args.dp_target_clip_fraction)
                 else:
-                    args.clip_frac_ema = decay * args.clip_frac_ema + (1 - decay) * args.last_clip_fraction
+                    args.clip_frac_ema = decay * args.clip_frac_ema + (1 - decay) * getattr(args, 'last_clip_fraction', args.dp_target_clip_fraction)
                 eta = 0.1
                 args.log_dp_clip += eta * (args.clip_frac_ema - args.dp_target_clip_fraction)
                 new_clip = float(math.exp(args.log_dp_clip))
