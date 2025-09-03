@@ -599,10 +599,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     tl_has_grad = tl_optimizer is not None and _has_grads(tl_optimizer)
                     if dp_has_grad:
                         scaler.unscale_(dp_optimizer)
-                        for param in dp_optimizer.params:
-                            if getattr(param, 'grad_sample', None) is not None:
-                                param.grad_sample = param.grad_sample.float()
-                                param.grad_sample /= scaler.get_scale()
+                        if hasattr(dp_optimizer, 'params'):
+                            for param in dp_optimizer.params:
+                                if getattr(param, 'grad_sample', None) is not None:
+                                    param.grad_sample = param.grad_sample.float()
+                                    param.grad_sample /= scaler.get_scale()
                     if head_has_grad:
                         scaler.unscale_(head_optimizer)
                     if tl_has_grad:
