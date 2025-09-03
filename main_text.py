@@ -671,10 +671,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         X_out_sup = X_out_all[:N * K]
                         X_out_query = X_out_all[N * K:]
 
-                    support_features = torch.nan_to_num(l2_normalize(X_out_sup), nan=0.0, posinf=0.0, neginf=0.0)
-                    query_features = torch.nan_to_num(l2_normalize(X_out_query), nan=0.0, posinf=0.0, neginf=0.0)
+                    support_features = torch.nan_to_num(l2_normalize(X_out_sup), nan=0.0, posinf=0.0, neginf=0.0).float()
+                    query_features = torch.nan_to_num(l2_normalize(X_out_query), nan=0.0, posinf=0.0, neginf=0.0).float()
 
-                    clf = LogisticRegression(support_features.size(1), N).to(support_features.device)
+                    clf = LogisticRegression(support_features.size(1), N).to(support_features.device).float()
                     clf.fit(support_features, support_labels, max_iter=1000)
 
                     out = clf.predict_proba(query_features)
