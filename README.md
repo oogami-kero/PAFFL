@@ -44,6 +44,7 @@ The repository now includes optional support for a **personalised transformation
   * `off`: disable differential privacy.
   * `--dp_clip`: clipping norm (default `1.0`)
   * `--dp_noise`: noise multiplier
+  * `--dp_constant_noise`: keep the noise multiplier σ fixed when adapting the clipping norm so the base noise standard deviation remains constant across rounds
   * `--dp_delta`: target delta for privacy accounting (default `1e-5`)
   * `--print_eps`: output the current ε after each communication round when set to `1`
   * `--dp_target_clip_fraction`: desired fraction of client updates to clip (default `0.1`)

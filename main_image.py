@@ -202,6 +202,8 @@ def get_args():
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
     parser.add_argument('--dp_noise_scale', type=float, default=0.1, help='additional scaling for DP noise')
+    parser.add_argument('--dp_constant_noise', action='store_true',
+                        help='keep DP noise multiplier constant when adapting clipping norm')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
     parser.add_argument('--dp_clip_max', type=float, default=20.0, help='maximum DP-SGD clipping norm')
     parser.add_argument('--dp_target_clip_fraction', type=float, default=0.1,
@@ -1186,7 +1188,8 @@ if __name__ == '__main__':
                 # new_clip = max(min(new_clip, old_clip * 1.1), old_clip * 0.9)
                 args.dp_clip = max(1.0, min(new_clip, args.dp_clip_max))
                 args.log_dp_clip = math.log(args.dp_clip)
-                args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
+                if not args.dp_constant_noise:
+                    args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
                 num_clients = len(deltas) or 1
                 noise_std = args.dp_noise * args.dp_noise_scale / num_clients
                 z = noise_std / args.dp_clip
