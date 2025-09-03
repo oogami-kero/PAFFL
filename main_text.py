@@ -894,6 +894,9 @@ def aggregate_deltas(
     logging.info('Clipped fraction: %.4f', getattr(args, 'last_clip_fraction', args.dp_target_clip_fraction))
     base_noise_std = args.dp_noise * args.dp_noise_scale / num_clients
     logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
+    avg_norm_sq = 0.0
+    noise_norm_sq = 0.0
+    step_norm_sq = 0.0
     for key in global_w:
         if 'few_classify' in key:
             continue
@@ -916,7 +919,22 @@ def aggregate_deltas(
             * args.dp_noise_scale
             / num_clients
         )
-        global_w[key] += avg_update + noise
+        update = avg_update + noise
+        avg_norm_sq += avg_update.pow(2).sum().item()
+        noise_norm_sq += noise.pow(2).sum().item()
+        step_norm_sq += update.pow(2).sum().item()
+        if args.server_momentum == 0:
+            update *= args.server_lr
+        global_w[key] += update
+    avg_norm = avg_norm_sq ** 0.5
+    noise_norm = noise_norm_sq ** 0.5
+    step_norm = args.server_lr * (step_norm_sq ** 0.5)
+    logging.info(
+        'Aggregation norms - ||avg||: %.4f ||noise||: %.4f ||step||: %.4f',
+        avg_norm,
+        noise_norm,
+        step_norm,
+    )
 
 
 if __name__ == '__main__':
