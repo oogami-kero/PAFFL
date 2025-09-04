@@ -1232,10 +1232,10 @@ if __name__ == '__main__':
                     args.bootstrap_done = True
                 if ((round + 1) % args.dp_adapt_period == 0 and
                         abs(args.scale_ema - args.dp_target_mean_scale) > args.dp_deadband):
-                    ratio = args.dp_target_mean_scale / max(1e-8, args.scale_ema)
+                    ratio = args.scale_ema / max(1e-8, args.dp_target_mean_scale)
                     ratio = np.clip(ratio, 0.60, 1.40)
                     old_clip = args.dp_clip
-                    args.log_dp_clip += args.dp_adapt_gain * math.log(ratio)
+                    args.log_dp_clip -= args.dp_adapt_gain * math.log(ratio)
                     args.dp_clip = min(max(math.exp(args.log_dp_clip), args.dp_clip_min), args.dp_clip_max)
                     if args.dp_noise_scale is not None:
                         args.clip_ref = 0.99 * getattr(args, 'clip_ref', args.dp_clip) + 0.01 * args.dp_clip
