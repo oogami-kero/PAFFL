@@ -200,24 +200,39 @@ def get_args():
     parser.add_argument('--use_transform_layer', type=int, default=0,
                         help='enable personalized transformation layer')
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
-    parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
-    parser.add_argument('--dp_noise_scale', type=float, default=None, help='[deprecated] additional scaling for DP noise')
-    parser.add_argument('--dp_constant_noise', action='store_true',
-                        help='keep DP noise multiplier constant when adapting clipping norm')
-    parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
+    parser.add_argument('--dp_clip_min', type=float, default=1.0, help='minimum DP-SGD clipping norm')
     parser.add_argument('--dp_clip_max', type=float, default=20.0, help='maximum DP-SGD clipping norm')
-    parser.add_argument('--dp_target_clip_fraction', type=float, default=0.1,
-                        help='target fraction of clients to be clipped')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--dp_noise', type=float, default=None, help='DP-SGD noise multiplier')
+    group.add_argument('--dp_noise_scale', type=float, default=None, help='scale for DP noise as sigma = scale * clip')
+    parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
+    parser.add_argument('--dp_target_mean_scale', type=float, default=0.6,
+                        help='target mean client clipping scale (0 < s ≤ 1)')
+    parser.add_argument('--dp_adapt_gain', type=float, default=0.5,
+                        help='gain for mean-scale DP clip adaptation')
+    parser.add_argument('--dp_adapt_period', type=int, default=3,
+                        help='period (in rounds) for DP clip adaptation')
+    parser.add_argument('--dp_deadband', type=float, default=0.05,
+                        help='deadband for mean-scale control')
+    parser.add_argument('--dp_bootstrap', type=bool, default=True,
+                        help='bootstrap clip from median norm on first round')
     parser.add_argument('--dp_mode', choices=['local', 'server', 'off'], default='server')
     parser.add_argument('--dp_accountant', choices=['rdp', 'prv'], default='rdp',
                         help='DP accountant to estimate the privacy budget')
     parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
     parser.add_argument('--use_amp', action='store_true', help='enable mixed precision training')
     args = parser.parse_args()
+    if args.dp_noise is not None and args.dp_noise_scale is not None:
+        parser.error('--dp_noise and --dp_noise_scale are mutually exclusive')
     if args.dp_noise_scale is not None:
-        logging.warning('--dp_noise_scale is deprecated; noise is scaled using dp_clip')
-    args.dp_clip = min(args.dp_clip, args.dp_clip_max)
+        args.clip_ref = args.dp_clip
+        args.dp_noise = args.dp_noise_scale * args.clip_ref
+    elif args.dp_noise is None:
+        args.dp_noise = 0.0
+    args.dp_clip = min(max(args.dp_clip, args.dp_clip_min), args.dp_clip_max)
     args.log_dp_clip = math.log(max(1.0, args.dp_clip))
+    if not args.dp_bootstrap:
+        args.scale_ema = args.dp_target_mean_scale
     return args
 
 
@@ -891,9 +906,7 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
     """Aggregate client deltas with clipping and layer-specific noise.
 
     Noise is scaled by the number of participating clients to maintain the
-    expected privacy budget regardless of the number of contributions. The
-    fraction of client updates that were clipped is stored in
-    ``args.last_clip_fraction`` for adaptive clipping strategies.
+    expected privacy budget regardless of the number of contributions.
 
     Args:
         global_w (dict): Global model weights to be updated.
@@ -901,9 +914,14 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         args (Namespace): Training arguments.
         noise_multipliers (dict, optional): Parameter-specific noise multipliers.
         reset_bn (bool, optional): Reset BatchNorm statistics after aggregation.
+
+    Returns:
+        tuple: ``(mean_norm, median_norm, mean_scale)`` statistics for the
+        current round, where norms are measured before clipping.
     """
     clipped = []
     scales = []
+    norms = []
     for cid, delta in deltas.items():
         flat = torch.cat([
             v.view(-1)
@@ -923,12 +941,14 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         scale = min(1.0, args.dp_clip / (norm + 1e-12))
         logging.info('Client %s norm %.4f scale %.4f', cid, norm, scale)
         scales.append(scale)
+        norms.append(norm)
         clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
     num_clients = len(clipped) or 1
-    args.last_clip_fraction = float(np.mean([s < 1.0 for s in scales])) if scales else 0.0
-    logging.info('Clipped fraction: %.4f', getattr(args, 'last_clip_fraction', args.dp_target_clip_fraction))
-    if scales:
-        logging.info('Clipping scale stats - mean: %.4f max: %.4f', float(np.mean(scales)), float(np.max(scales)))
+    mean_norm = float(np.mean(norms)) if norms else 0.0
+    median_norm = float(np.median(norms)) if norms else 0.0
+    mean_scale = float(np.mean(scales)) if scales else 1.0
+    logging.info('Norm stats - mean: %.4f median: %.4f', mean_norm, median_norm)
+    logging.info('Scale stats - mean: %.4f max: %.4f', mean_scale, float(np.max(scales)) if scales else 1.0)
     base_noise_std = args.dp_noise * args.dp_clip / num_clients
     logging.info(
         'Effective noise std: %.6f (dp_noise=%.4f, dp_clip=%.4f, clients=%d)',
@@ -984,6 +1004,8 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         noise_norm,
         step_norm,
     )
+
+    return mean_norm, median_norm, mean_scale
 
 
 if __name__ == '__main__':
@@ -1122,7 +1144,6 @@ if __name__ == '__main__':
         no_improve = 0
 
         dp_steps = 0
-        args.last_clip_fraction = args.dp_target_clip_fraction
         for round in range(n_comm_rounds):
             #logger.info("in comm round:" + str(round))
             party_list_this_round = party_list_rounds[round]
@@ -1183,26 +1204,6 @@ if __name__ == '__main__':
                 dp_steps += args.num_train_tasks * len(participating_ids)
             elif args.dp_mode == 'server':
                 dp_steps += 1
-            if args.dp_mode == 'server':
-                old_clip, old_noise = args.dp_clip, args.dp_noise
-                decay = 0.9
-                if not hasattr(args, 'clip_frac_ema'):
-                    args.clip_frac_ema = getattr(args, 'last_clip_fraction', args.dp_target_clip_fraction)
-                else:
-                    args.clip_frac_ema = decay * args.clip_frac_ema + (1 - decay) * getattr(args, 'last_clip_fraction', args.dp_target_clip_fraction)
-                eta = 0.1
-                args.log_dp_clip += eta * (args.clip_frac_ema - args.dp_target_clip_fraction)
-                new_clip = float(math.exp(args.log_dp_clip))
-                # new_clip = max(min(new_clip, old_clip * 1.1), old_clip * 0.9)
-                args.dp_clip = max(1.0, min(new_clip, args.dp_clip_max))
-                args.log_dp_clip = math.log(args.dp_clip)
-                if not args.dp_constant_noise:
-                    args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
-                num_clients = len(deltas) or 1
-                noise_std = args.dp_noise * args.dp_clip / num_clients
-                z = noise_std / args.dp_clip
-                print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
-                logger.info('clip EMA %.4f, DP clip %.4f, z %.4f', args.clip_frac_ema, args.dp_clip, z)
             if args.dp_mode != 'off':
                 epsilon = dp_utils.compute_epsilon(
                     dp_steps,
@@ -1216,7 +1217,41 @@ if __name__ == '__main__':
                 for name in noise_multipliers:
                     if name.endswith('bias'):
                         noise_multipliers[name] *= 0.5
-                aggregate_deltas(global_w, deltas, args, noise_multipliers)
+                mean_norm, median_norm, mean_scale = aggregate_deltas(global_w, deltas, args, noise_multipliers)
+                decay = 0.9
+                if hasattr(args, 'scale_ema'):
+                    args.scale_ema = decay * args.scale_ema + (1 - decay) * mean_scale
+                else:
+                    args.scale_ema = mean_scale
+                if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
+                    args.dp_clip = min(max(args.dp_target_mean_scale * median_norm, args.dp_clip_min), args.dp_clip_max)
+                    args.log_dp_clip = math.log(args.dp_clip)
+                    if args.dp_noise_scale is not None:
+                        args.clip_ref = args.dp_clip
+                        args.dp_noise = args.dp_noise_scale * args.clip_ref
+                    args.bootstrap_done = True
+                if ((round + 1) % args.dp_adapt_period == 0 and
+                        abs(args.scale_ema - args.dp_target_mean_scale) > args.dp_deadband):
+                    ratio = args.dp_target_mean_scale / max(1e-8, args.scale_ema)
+                    ratio = np.clip(ratio, 0.60, 1.40)
+                    old_clip = args.dp_clip
+                    args.log_dp_clip += args.dp_adapt_gain * math.log(ratio)
+                    args.dp_clip = min(max(math.exp(args.log_dp_clip), args.dp_clip_min), args.dp_clip_max)
+                    if args.dp_noise_scale is not None:
+                        args.clip_ref = 0.99 * getattr(args, 'clip_ref', args.dp_clip) + 0.01 * args.dp_clip
+                        args.dp_noise = args.dp_noise_scale * args.clip_ref
+                    logging.info(
+                        'Mean-scale control — s*: %.3f, s̄: %.3f (EMA %.3f), clip: %.2f → %.2f, mean_norm: %.1f, median_norm: %.1f, adapt_period: %d, gain: %.1f',
+                        args.dp_target_mean_scale,
+                        mean_scale,
+                        args.scale_ema,
+                        old_clip,
+                        args.dp_clip,
+                        mean_norm,
+                        median_norm,
+                        args.dp_adapt_period,
+                        args.dp_adapt_gain,
+                    )
             else:
                 total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
                 fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]

@@ -43,11 +43,15 @@ The repository now includes optional support for a **personalised transformation
   * `server`: clip and noise client updates on the server.
   * `off`: disable differential privacy.
   * `--dp_clip`: clipping norm (default `1.0`)
-  * `--dp_noise`: noise multiplier
-  * `--dp_constant_noise`: keep the noise multiplier σ fixed when adapting the clipping norm so the base noise standard deviation remains constant across rounds
+  * `--dp_clip_min` / `--dp_clip_max`: bounds for adaptive clipping (defaults `1.0` / `20.0` for images, `2.0` max for text)
+  * `--dp_target_mean_scale`: desired mean clipping scale (default `0.6`)
+  * `--dp_adapt_gain`: adaptation gain (default `0.5`)
+  * `--dp_adapt_period`: rounds between clip adaptations (default `3`)
+  * `--dp_deadband`: tolerance around the target scale before adapting (default `0.05`)
+  * `--dp_bootstrap`: bootstrap clip from the first round's median norm (default `True`)
+  * `--dp_noise`: fixed noise multiplier (default) **or** `--dp_noise_scale` to scale noise with the clip via `sigma = scale * clip`
   * `--dp_delta`: target delta for privacy accounting (default `1e-5`)
   * `--print_eps`: output the current ε after each communication round when set to `1`
-  * `--dp_target_clip_fraction`: desired fraction of client updates to clip (default `0.1`)
 
 Examples:
 
