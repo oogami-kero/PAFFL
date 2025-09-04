@@ -201,7 +201,7 @@ def get_args():
                         help='enable personalized transformation layer')
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
     parser.add_argument('--dp_noise', type=float, default=0.0, help='DP-SGD noise multiplier')
-    parser.add_argument('--dp_noise_scale', type=float, default=0.1, help='additional scaling for DP noise')
+    parser.add_argument('--dp_noise_scale', type=float, default=None, help='[deprecated] additional scaling for DP noise')
     parser.add_argument('--dp_constant_noise', action='store_true',
                         help='keep DP noise multiplier constant when adapting clipping norm')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
@@ -214,6 +214,8 @@ def get_args():
     parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
     parser.add_argument('--use_amp', action='store_true', help='enable mixed precision training')
     args = parser.parse_args()
+    if args.dp_noise_scale is not None:
+        logging.warning('--dp_noise_scale is deprecated; noise is scaled using dp_clip')
     args.dp_clip = min(args.dp_clip, args.dp_clip_max)
     args.log_dp_clip = math.log(max(1.0, args.dp_clip))
     return args
@@ -927,8 +929,14 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
     logging.info('Clipped fraction: %.4f', getattr(args, 'last_clip_fraction', args.dp_target_clip_fraction))
     if scales:
         logging.info('Clipping scale stats - mean: %.4f max: %.4f', float(np.mean(scales)), float(np.max(scales)))
-    base_noise_std = args.dp_noise * args.dp_noise_scale / num_clients
-    logging.info('Effective noise std: %.6f (clients=%d)', base_noise_std, num_clients)
+    base_noise_std = args.dp_noise * args.dp_clip / num_clients
+    logging.info(
+        'Effective noise std: %.6f (dp_noise=%.4f, dp_clip=%.4f, clients=%d)',
+        base_noise_std,
+        args.dp_noise,
+        args.dp_clip,
+        num_clients,
+    )
     avg_norm_sq = 0.0
     noise_norm_sq = 0.0
     step_norm_sq = 0.0
@@ -957,7 +965,7 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         noise = (
             torch.randn_like(avg_update)
             * noise_mult
-            * args.dp_noise_scale
+            * args.dp_clip
             / num_clients
         )
         update = avg_update + noise
@@ -1191,7 +1199,7 @@ if __name__ == '__main__':
                 if not args.dp_constant_noise:
                     args.dp_noise = dp_utils.scale_noise_to_clip(old_noise, old_clip, args.dp_clip)
                 num_clients = len(deltas) or 1
-                noise_std = args.dp_noise * args.dp_noise_scale / num_clients
+                noise_std = args.dp_noise * args.dp_clip / num_clients
                 z = noise_std / args.dp_clip
                 print(f'clip EMA: {args.clip_frac_ema:.4f}, DP clip: {args.dp_clip:.4f}, z: {z:.4f}')
                 logger.info('clip EMA %.4f, DP clip %.4f, z %.4f', args.clip_frac_ema, args.dp_clip, z)
