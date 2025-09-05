@@ -68,6 +68,7 @@ python main_image.py --dataset miniImageNet --server_momentum 0.9 --server_lr 0.
 When `--print_eps 1`, the current ε and δ are printed after each round.
 
 * Enable server momentum with `--server_momentum <m>` and set the server learning rate with `--server_lr <lr>` to use FedAvgM for faster convergence. A good starting point is `lr ≈ 1 - m`.
+* Cap the server update norm with `--target_step <s>` to limit the L2 norm of the aggregated step after scaling. Values around `1.0` work well; tune by monitoring the logged `||u||` and set `s` either as an absolute norm or as a fraction of the typical signal norm.
 * Configure learning rate schedules with `--lr_schedule` and `--lr_decay`. Only `cosine` is currently supported. A suggested starting point is:
 
     ```bash
