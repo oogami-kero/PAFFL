@@ -1026,7 +1026,7 @@ class ModelFed_Adp(nn.Module):
         with torch.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
             h = self.features(x_ori)
 
-        ebd = h.view(h.size(0), -1)
+        ebd = h.view(h.size(0), -1).float()
         with torch.autocast('cuda', enabled=False):
             if not all_classify:
                 x = self.transformer(ebd.unsqueeze(1)).squeeze(1)
