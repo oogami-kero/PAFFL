@@ -984,7 +984,7 @@ def aggregate_deltas(
         eta_eff,
         'ON' if eta_eff < args.server_lr else 'off',
         step_norm,
-        step_norm / max(eta_eff * avg_norm, 1e-12),
+        step_norm / max(avg_norm, 1e-12),
     )
     for key, update in updates.items():
         if args.server_momentum == 0:
