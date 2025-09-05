@@ -206,6 +206,8 @@ def get_args():
     group.add_argument('--dp_noise', type=float, default=None, help='DP-SGD noise multiplier')
     group.add_argument('--dp_noise_scale', type=float, default=None, help='scale for DP noise as sigma = scale * clip')
     parser.add_argument('--dp_delta', type=float, default=1e-5, help='target delta for DP accountant')
+    parser.add_argument('--dp_constant_noise', action='store_true',
+                        help='keep DP noise fixed when adapting clip')
     parser.add_argument('--dp_target_mean_scale', type=float, default=0.6,
                         help='target mean client clipping scale (0 < s ≤ 1)')
     parser.add_argument('--dp_adapt_gain', type=float, default=0.5,
@@ -225,8 +227,8 @@ def get_args():
     if args.dp_noise is not None and args.dp_noise_scale is not None:
         parser.error('--dp_noise and --dp_noise_scale are mutually exclusive')
     if args.dp_noise_scale is not None:
-        args.clip_ref = args.dp_clip
-        args.dp_noise = args.dp_noise_scale * args.clip_ref
+        args.dp_noise = args.dp_noise_scale * args.dp_clip
+        args.dp_noise_init = args.dp_noise
     elif args.dp_noise is None:
         args.dp_noise = 0.0
     args.dp_clip = min(max(args.dp_clip, args.dp_clip_min), args.dp_clip_max)
@@ -1224,11 +1226,11 @@ if __name__ == '__main__':
                 else:
                     args.scale_ema = mean_scale
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
+                    old_clip = args.dp_clip
                     args.dp_clip = min(max(args.dp_target_mean_scale * median_norm, args.dp_clip_min), args.dp_clip_max)
                     args.log_dp_clip = math.log(args.dp_clip)
-                    if args.dp_noise_scale is not None:
-                        args.clip_ref = args.dp_clip
-                        args.dp_noise = args.dp_noise_scale * args.clip_ref
+                    if args.dp_noise_scale is not None and not args.dp_constant_noise:
+                        args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
                     args.bootstrap_done = True
                 if ((round + 1) % args.dp_adapt_period == 0 and
                         abs(args.scale_ema - args.dp_target_mean_scale) > args.dp_deadband):
@@ -1237,9 +1239,8 @@ if __name__ == '__main__':
                     old_clip = args.dp_clip
                     args.log_dp_clip -= args.dp_adapt_gain * math.log(ratio)
                     args.dp_clip = min(max(math.exp(args.log_dp_clip), args.dp_clip_min), args.dp_clip_max)
-                    if args.dp_noise_scale is not None:
-                        args.clip_ref = 0.99 * getattr(args, 'clip_ref', args.dp_clip) + 0.01 * args.dp_clip
-                        args.dp_noise = args.dp_noise_scale * args.clip_ref
+                    if args.dp_noise_scale is not None and not args.dp_constant_noise:
+                        args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
                     logging.info(
                         'Mean-scale control — s*: %.3f, s̄: %.3f (EMA %.3f), clip: %.2f → %.2f, mean_norm: %.1f, median_norm: %.1f, adapt_period: %d, gain: %.1f',
                         args.dp_target_mean_scale,
