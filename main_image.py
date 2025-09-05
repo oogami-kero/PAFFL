@@ -398,7 +398,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
 
     use_amp = args.use_amp and args.device != 'cpu'
-    scaler = GradScaler(enabled=use_amp)
+    amp_dtype = torch.float16
+    scaler = GradScaler(enabled=use_amp and amp_dtype == torch.float16)
 
     if args.dataset == 'FC100':
         X_transform_train = transforms.Compose([
@@ -578,9 +579,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                     for j in range(args.fine_tune_steps):
                         net_new.zero_grad()
-                        with autocast(enabled=use_amp):
+                        with autocast(enabled=False):
                             X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
-                            losses = F.cross_entropy(out, support_labels, reduction='none')
+                            losses = F.cross_entropy(out.float(), support_labels, reduction='none')
                         losses.mean().backward()
                         with torch.no_grad():
                             params_to_update = []
@@ -592,11 +593,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                                     continue
                                 param.data.add_(-args.fine_tune_lr * param.grad)
 
-                    with autocast(enabled=use_amp):
+                    with autocast(dtype=amp_dtype, enabled=use_amp):
                         X_out_query, _, out = net_new(X_total_query)
                         X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
-
-                        X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
                         for name, param in gmodel.named_parameters():
                             if 'transformer' in name:
                                 param.requires_grad_(False)
@@ -604,15 +603,18 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         for name, param in gmodel.named_parameters():
                             if 'transformer' in name:
                                 param.requires_grad_(True)
-                        out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
-                        out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
-                        #############################
-                        # Q=K here update for all-model
+                    X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
+                    out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
+                    out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
+                    #############################
+                    # Q=K here update for all-model
+                    with autocast(enabled=False):
                         for j in range(Q):
-                            contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1) % Q],
-                                                                     tau=0.5)
+                            contras_loss, similarity = InforNCE_Loss(
+                                X_transformer_out_sup[j].float(), out_sup[(j + 1) % Q].float(), tau=0.5
+                            )
                             loss_all += contras_loss / Q * 0.1
-                        loss_all += loss_ce(out_all, y_total)
+                        loss_all += loss_ce(out_all.float(), y_total)
 
                 if use_amp:
                     scaler.scale(loss_all).backward()
@@ -674,8 +676,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             param.requires_grad_(False)
                     if isinstance(gmodel, GradSampleModule):
                         gmodel.disable_hooks()
-                    with torch.no_grad():
-                        with autocast(enabled=use_amp):
+                    with torch.inference_mode():
+                        with autocast(dtype=amp_dtype, enabled=use_amp):
                             X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
                     if isinstance(gmodel, GradSampleModule):
                         gmodel.enable_hooks()
@@ -690,11 +692,12 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             params_to_update.append((name, param))
 
                     #meta-update few-classifier on query
-                    losses = F.cross_entropy(out, query_labels, reduction='none')
-                    out_sup_on_N_class = out_all[N * K:, transformed_class_list]
-                    out_sup_on_N_class /= out_sup_on_N_class.sum(-1, keepdim=True)
-                    aux_loss = F.cross_entropy(out, out_sup_on_N_class.detach(), reduction='none') * 0.1
-                    losses = losses + aux_loss
+                    with autocast(enabled=False):
+                        losses = F.cross_entropy(out.float(), query_labels, reduction='none')
+                        out_sup_on_N_class = out_all.float()[N * K:, transformed_class_list]
+                        out_sup_on_N_class /= out_sup_on_N_class.sum(-1, keepdim=True)
+                        aux_loss = F.cross_entropy(out.float(), out_sup_on_N_class.detach(), reduction='none') * 0.1
+                        losses = losses + aux_loss
                     net_new.zero_grad()
                     losses.mean().backward()
                     with torch.no_grad():
@@ -721,8 +724,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 use_logistic = True
 
                 if use_logistic:
-                    with torch.no_grad():
-                        with autocast(enabled=use_amp):
+                    with torch.inference_mode():
+                        with autocast(dtype=amp_dtype, enabled=use_amp):
                             X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0))
                         X_out_sup = X_out_all[:N * K]
                         X_out_query = X_out_all[N * K:]
@@ -733,6 +736,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     clf = LogisticRegression(support_features.size(1), N).to(support_features.device).float()
                     with autocast(enabled=False):
                         clf.fit(support_features, support_labels, max_iter=1000)
+                    with torch.inference_mode():
                         out = clf.predict_proba(query_features)
 
                     acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
