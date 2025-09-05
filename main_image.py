@@ -855,23 +855,31 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 args.client_grad_norms[net_id] = grad_ma_decay * prev + (1 - grad_ma_decay) * norm
         else:
             net.train()
-            result, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
-                                        device=device, test_only=True, test_only_k=test_only_k)
+            result, _, _ = train_net_few_shot_new(
+                net_id,
+                net,
+                n_epoch,
+                args.lr,
+                args.optimizer,
+                args,
+                X_train_client,
+                y_train_client,
+                X_test,
+                y_test,
+                device=device,
+                test_only=True,
+                test_only_k=test_only_k,
+            )
             testacc, max_values, indices = result
             max_value_all_clients.append(max_values)
             indices_all_clients.append(indices)
 
-            acc_list.append(testacc)
-
-            logger.info(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
-            print(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
-
-            max_value_all_clients = torch.stack(max_value_all_clients, 0)
-            indices_all_clients = torch.stack(indices_all_clients, 0)
-            return acc_list, max_value_all_clients, indices_all_clients, epsilon
-
         avg_acc += testacc
         acc_list.append(testacc)
+
+        if test_only:
+            logger.info(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
+            print(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
 
     logger.info(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
     print(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
