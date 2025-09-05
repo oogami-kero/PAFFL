@@ -20,7 +20,6 @@ from model import WordEmbed
 from utils import *
 from opacus import PrivacyEngine
 from opacus.grad_sample import GradSampleModule
-from torch.cuda.amp import autocast, GradScaler
 import dp_utils
 from dp_utils import remove_dp_hooks
 import warnings
@@ -216,6 +215,8 @@ def get_args():
                         help='DP accountant to estimate the privacy budget')
     parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
     parser.add_argument('--use_amp', action='store_true', help='enable mixed precision training')
+    parser.add_argument('--amp_dtype', choices=['fp16', 'bf16'], default='fp16',
+                        help='dtype for AMP autocast')
     args = parser.parse_args()
     if args.dp_noise is not None and args.dp_noise_scale is not None:
         parser.error('--dp_noise and --dp_noise_scale are mutually exclusive')
@@ -382,7 +383,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
 
     use_amp = args.use_amp and args.device != 'cpu'
-    scaler = GradScaler(enabled=use_amp)
+    amp_dtype = torch.bfloat16 if args.amp_dtype == 'bf16' else torch.float16
 
     if args.dataset == 'FC100':
         X_transform_train = transforms.Compose([
@@ -558,8 +559,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                     for j in range(args.fine_tune_steps):
                         net_new.zero_grad()
-                        with autocast(enabled=use_amp):
-                            X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
+                        with torch.autocast('cuda', enabled=False):
+                            X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup, use_amp=False)
                             losses = F.cross_entropy(out, support_labels, reduction='none')
                         losses.mean().backward()
                         with torch.no_grad():
@@ -572,73 +573,54 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                                     continue
                                 param.data.add_(-args.fine_tune_lr * param.grad)
 
-                    with autocast(enabled=use_amp):
-                        X_out_query, _, out = net_new(X_total_query)
-                        X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
+                    X_out_query, _, out = net_new(X_total_query, use_amp=use_amp, amp_dtype=amp_dtype)
+                    X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup, use_amp=use_amp, amp_dtype=amp_dtype)
 
-                        X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
-                        for name, param in gmodel.named_parameters():
-                            if 'transformer' in name:
-                                param.requires_grad_(False)
-                        X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-                        for name, param in gmodel.named_parameters():
-                            if 'transformer' in name:
-                                param.requires_grad_(True)
-                        out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
-                        out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
-                        #############################
-                        # Q=K here update for all-model
-                        for j in range(Q):
-                            contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q],
-                                                                     tau=0.5)
-                            loss_all += contras_loss / Q *0.1
-                        loss_all += loss_ce(out_all, y_total)
+                    X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
+                    for name, param in gmodel.named_parameters():
+                        if 'transformer' in name:
+                            param.requires_grad_(False)
+                    X_out_all, x_all, out_all = gmodel(
+                        torch.cat([X_total_sup, X_total_query], 0),
+                        all_classify=True,
+                        use_amp=use_amp,
+                        amp_dtype=amp_dtype,
+                    )
+                    for name, param in gmodel.named_parameters():
+                        if 'transformer' in name:
+                            param.requires_grad_(True)
+                    out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
+                    out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
+                    #############################
+                    # Q=K here update for all-model
+                    for j in range(Q):
+                        contras_loss, similarity = InforNCE_Loss(
+                            X_transformer_out_sup[j], out_sup[(j + 1) % Q], tau=0.5
+                        )
+                        loss_all += contras_loss / Q *0.1
+                    loss_all += loss_ce(out_all, y_total)
 
-                if use_amp:
-                    scaler.scale(loss_all).backward()
-                    scaler.unscale_(dp_optimizer)
-                    if hasattr(dp_optimizer, 'params'):
-                        for _, param in dp_named_params:
-                            if hasattr(param, 'grad_sample') and param.grad_sample is not None:
-                                param.grad_sample = (param.grad_sample / scaler.get_scale()).float()
-                    scaler.unscale_(head_optimizer)
-                    if tl_optimizer is not None:
-                        scaler.unscale_(tl_optimizer)
-                    grad_norm = torch.nn.utils.clip_grad_norm_(gmodel.parameters(), max_norm)
-                    last_loss = loss_all.item()
-                    print(f'batch loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
-                    if torch.isnan(torch.tensor(grad_norm)) or torch.isnan(loss_all.detach()):
-                        print('warning: NaN detected in loss or gradients')
-                    if args.dp_mode == 'local':
-                        for name, param in dp_named_params:
-                            if param.grad is None:
-                                continue
-                            grad_norm = param.grad.detach().norm(2).item()
-                            prev = args.grad_norms_ma.get(name, grad_norm)
-                            args.grad_norms_ma[name] = grad_ma_decay * prev + (1 - grad_ma_decay) * grad_norm
-                    scaler.step(dp_optimizer)
-                    scaler.step(head_optimizer)
-                    if tl_optimizer is not None:
-                        scaler.step(tl_optimizer)
-                    scaler.update()
-                else:
-                    loss_all.backward()
-                    grad_norm = torch.nn.utils.clip_grad_norm_(gmodel.parameters(), max_norm)
-                    last_loss = loss_all.item()
-                    print(f'batch loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
-                    if torch.isnan(torch.tensor(grad_norm)) or torch.isnan(loss_all.detach()):
-                        print('warning: NaN detected in loss or gradients')
-                    if args.dp_mode == 'local':
-                        for name, param in dp_named_params:
-                            if param.grad is None:
-                                continue
-                            grad_norm = param.grad.detach().norm(2).item()
-                            prev = args.grad_norms_ma.get(name, grad_norm)
-                            args.grad_norms_ma[name] = grad_ma_decay * prev + (1 - grad_ma_decay) * grad_norm
-                    dp_optimizer.step()
-                    head_optimizer.step()
-                    if tl_optimizer is not None:
-                        tl_optimizer.step()
+                loss_all.backward()
+                if hasattr(dp_optimizer, 'params'):
+                    for _, param in dp_named_params:
+                        if hasattr(param, 'grad_sample') and param.grad_sample is not None:
+                            param.grad_sample = param.grad_sample.float()
+                grad_norm = torch.nn.utils.clip_grad_norm_(gmodel.parameters(), max_norm)
+                last_loss = loss_all.item()
+                print(f'batch loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
+                if torch.isnan(torch.tensor(grad_norm)) or torch.isnan(loss_all.detach()):
+                    print('warning: NaN detected in loss or gradients')
+                if args.dp_mode == 'local':
+                    for name, param in dp_named_params:
+                        if param.grad is None:
+                            continue
+                        grad_norm = param.grad.detach().norm(2).item()
+                        prev = args.grad_norms_ma.get(name, grad_norm)
+                        args.grad_norms_ma[name] = grad_ma_decay * prev + (1 - grad_ma_decay) * grad_norm
+                dp_optimizer.step()
+                head_optimizer.step()
+                if tl_optimizer is not None:
+                    tl_optimizer.step()
                 ############################
     
                     for name, param in gmodel.named_parameters():
@@ -647,8 +629,12 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     if isinstance(gmodel, GradSampleModule):
                         gmodel.disable_hooks()
                     with torch.no_grad():
-                        with autocast(enabled=use_amp):
-                            X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+                        X_out_all, x_all, out_all = gmodel(
+                            torch.cat([X_total_sup, X_total_query], 0),
+                            all_classify=True,
+                            use_amp=use_amp,
+                            amp_dtype=amp_dtype,
+                        )
                     if isinstance(gmodel, GradSampleModule):
                         gmodel.enable_hooks()
                     for name, param in gmodel.named_parameters():
@@ -691,8 +677,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     
                 if use_logistic:
                     with torch.no_grad():
-                        with autocast(enabled=use_amp):
-                            X_out_all, x_all, out_all = gmodel(torch.cat([X_total_sup, X_total_query], 0))
+                        X_out_all, x_all, out_all = gmodel(
+                            torch.cat([X_total_sup, X_total_query], 0),
+                            use_amp=use_amp,
+                            amp_dtype=amp_dtype,
+                        )
                         X_out_sup = X_out_all[:N * K]
                         X_out_query = X_out_all[N * K:]
 
@@ -700,9 +689,10 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     query_features = torch.nan_to_num(l2_normalize(X_out_query), nan=0.0, posinf=0.0, neginf=0.0).float()
 
                     clf = LogisticRegression(support_features.size(1), N).to(support_features.device).float()
-                    with autocast(enabled=False):
+                    with torch.autocast('cuda', enabled=False):
                         clf.fit(support_features, support_labels, max_iter=1000)
-                        out = clf.predict_proba(query_features)
+                        with torch.inference_mode():
+                            out = clf.predict_proba(query_features)
 
                     acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
                     max_value, index = torch.max(out, -1)
