@@ -953,13 +953,17 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
     mean_scale = float(np.mean(scales)) if scales else 1.0
     logging.info('Norm stats - mean: %.4f median: %.4f', mean_norm, median_norm)
     logging.info('Scale stats - mean: %.4f max: %.4f', mean_scale, float(np.max(scales)) if scales else 1.0)
-    base_noise_std = args.dp_noise * args.dp_clip / num_clients
+    if args.dp_constant_noise:
+        base_noise_std = args.dp_noise / num_clients
+    else:
+        base_noise_std = args.dp_noise * args.dp_clip / num_clients
     logging.info(
-        'Effective noise std: %.6f (dp_noise=%.4f, dp_clip=%.4f, clients=%d)',
+        'Effective noise std: %.6f (dp_noise=%.4f, dp_clip=%.4f, clients=%d, constant_noise=%s)',
         base_noise_std,
         args.dp_noise,
         args.dp_clip,
         num_clients,
+        args.dp_constant_noise,
     )
     avg_norm_sq = 0.0
     noise_norm_sq = 0.0
@@ -987,12 +991,15 @@ def aggregate_deltas(global_w, deltas, args, noise_multipliers=None, reset_bn=Fa
         noise_mult = args.dp_noise
         if noise_multipliers is not None:
             noise_mult = noise_multipliers.get(key, args.dp_noise)
-        noise = (
-            torch.randn_like(avg_update)
-            * noise_mult
-            * args.dp_clip
-            / num_clients
-        )
+        if args.dp_constant_noise:
+            noise = torch.randn_like(avg_update) * noise_mult / num_clients
+        else:
+            noise = (
+                torch.randn_like(avg_update)
+                * noise_mult
+                * args.dp_clip
+                / num_clients
+            )
         update = avg_update + noise
         updates[key] = update
         avg_norm_sq += avg_update.pow(2).sum().item()
