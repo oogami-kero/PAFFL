@@ -1002,27 +1002,40 @@ class ModelFed_Adp(nn.Module):
         except:
             raise ("Invalid model name. Check the config file and pass one of: resnet18 or resnet50")
 
-    def forward(self, x_ori, all_classify=False):
+    def forward(self, x_ori, all_classify=False, use_amp=False, amp_dtype=torch.float16):
+        """Forward pass with optional autocast for feature extraction.
+
+        Parameters
+        ----------
+        x_ori : torch.Tensor
+            Input batch.
+        all_classify : bool, optional
+            If ``True``, compute logits for all classes using ``all_classify``.
+        use_amp : bool, optional
+            Enable AMP autocast for the feature extractor.
+        amp_dtype : torch.dtype, optional
+            Precision to use for autocast when ``use_amp`` is ``True``.
+
+        Returns
+        -------
+        tuple(torch.Tensor, torch.Tensor, torch.Tensor)
+            Feature embeddings, intermediate representations and logits.
+        """
         if self.transform_layer is not None:
             x_ori = self.transform_layer(x_ori)
-        h = self.features(x_ori)
+        with torch.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
+            h = self.features(x_ori)
 
-        # print("h before:", h)
-        # print("h size:", h.size())
         ebd = h.view(h.size(0), -1)
-        # print("h after:", h)
-        #x = self.l1(h)
-        #x = F.relu(x)
-        #x = self.l2(x)
-
-        if not all_classify:
-            x = self.transformer(ebd.unsqueeze(1)).squeeze(1)
-            y = self.few_classify(x)
-        else:
-            x = self.l1(ebd)
-            x = F.relu(x)
-            x = self.l2(x)
-            y = self.all_classify(x)
+        with torch.autocast('cuda', enabled=False):
+            if not all_classify:
+                x = self.transformer(ebd.unsqueeze(1)).squeeze(1)
+                y = self.few_classify(x)
+            else:
+                x = self.l1(ebd)
+                x = F.relu(x)
+                x = self.l2(x)
+                y = self.all_classify(x)
         return ebd, x, y
 
 
