@@ -185,6 +185,7 @@ def get_args():
     parser.add_argument('--use_project_head', type=int, default=1)
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
     parser.add_argument('--server_lr', type=float, default=1.0, help='the server learning rate (FedAvgM)')
+    parser.add_argument('--target_step', type=float, default=1.0, help='L2 norm cap for the server update after scaling')
     parser.add_argument('--convergence_patience', type=int, default=0,
                         help='stop if accuracy does not improve after this many rounds (0 to disable)')
     parser.add_argument('--convergence_delta', type=float, default=0.0,
@@ -890,7 +891,8 @@ def aggregate_deltas(
         reset_bn (bool, optional): Reset BatchNorm statistics after aggregation.
 
     Returns:
-        tuple: ``(mean_norm, median_norm, mean_scale)`` statistics for this round.
+        tuple: ``(mean_norm, median_norm, mean_scale, eta_eff)`` statistics and
+        effective learning rate for this round.
     """
     clipped = []
     scales = []
@@ -932,6 +934,7 @@ def aggregate_deltas(
     avg_norm_sq = 0.0
     noise_norm_sq = 0.0
     step_norm_sq = 0.0
+    updates = {}
     for key in global_w:
         if 'few_classify' in key:
             continue
@@ -955,22 +958,31 @@ def aggregate_deltas(
             / num_clients
         )
         update = avg_update + noise
+        updates[key] = update
         avg_norm_sq += avg_update.pow(2).sum().item()
         noise_norm_sq += noise.pow(2).sum().item()
         step_norm_sq += update.pow(2).sum().item()
-        if args.server_momentum == 0:
-            update *= args.server_lr
-        global_w[key] += update
     avg_norm = avg_norm_sq ** 0.5
     noise_norm = noise_norm_sq ** 0.5
-    step_norm = args.server_lr * (step_norm_sq ** 0.5)
+    unscaled_step_norm = step_norm_sq ** 0.5
+    logging.info('||avg||=%.4f ||noise||=%.4f ||u||=%.4f', avg_norm, noise_norm, unscaled_step_norm)
+    eta_cap = args.target_step / max(unscaled_step_norm, 1e-12)
+    eta_eff = min(args.server_lr, eta_cap)
+    step_norm = eta_eff * unscaled_step_norm
     logging.info(
-        'Aggregation norms - ||avg||: %.4f ||noise||: %.4f ||step||: %.4f',
-        avg_norm,
-        noise_norm,
+        'server_lr(base)=%.4g eta_eff=%.4g (cap=%s) ||step||=%.4f ratio(step/avg)=%.3f',
+        args.server_lr,
+        eta_eff,
+        'ON' if eta_eff < args.server_lr else 'off',
         step_norm,
+        step_norm / max(eta_eff * avg_norm, 1e-12),
     )
-    return mean_norm, median_norm, mean_scale
+    for key, update in updates.items():
+        if args.server_momentum == 0:
+            global_w[key] += eta_eff * update
+        else:
+            global_w[key] += update
+    return mean_norm, median_norm, mean_scale, eta_eff
 
 
 if __name__ == '__main__':
@@ -1177,12 +1189,13 @@ if __name__ == '__main__':
                     accountant=args.dp_accountant,
                     sampling_rate=len(participating_ids) / args.n_parties,
                 )
+            eta_eff = args.server_lr
             if args.dp_mode == 'server':
                 noise_multipliers = {name: args.dp_noise for name in global_w}
                 for name in noise_multipliers:
                     if name.endswith('bias'):
                         noise_multipliers[name] *= 0.5
-                mean_norm, median_norm, mean_scale = aggregate_deltas(global_w, deltas, args, noise_multipliers)
+                mean_norm, median_norm, mean_scale, eta_eff = aggregate_deltas(global_w, deltas, args, noise_multipliers)
                 decay = 0.9
                 if hasattr(args, 'scale_ema'):
                     args.scale_ema = decay * args.scale_ema + (1 - decay) * mean_scale
@@ -1237,8 +1250,8 @@ if __name__ == '__main__':
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:
                     delta_w[key] = old_w[key] - global_w[key]
-                    moment_v[key] = args.server_momentum * moment_v[key] + (1-args.server_momentum) * delta_w[key]
-                    global_w[key] = old_w[key] - args.server_lr * moment_v[key]
+                    moment_v[key] = args.server_momentum * moment_v[key] + (1 - args.server_momentum) * delta_w[key]
+                    global_w[key] = old_w[key] - eta_eff * moment_v[key]
 
             global_model.load_state_dict(global_w)
 
