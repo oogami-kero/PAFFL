@@ -4,6 +4,7 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
+from torch.cuda.amp import GradScaler
 import argparse
 import logging
 import os
@@ -400,6 +401,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     use_amp = args.use_amp and args.device != 'cpu'
     amp_dtype = torch.bfloat16 if args.amp_dtype == 'bf16' else torch.float16
+    scaler = GradScaler(enabled=use_amp)
 
     if args.dataset == 'FC100':
         X_transform_train = transforms.Compose([
@@ -576,22 +578,22 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     gmodel_base = gmodel._module if hasattr(gmodel, '_module') else gmodel
                     net_new = copy.deepcopy(model_template)
                     net_new.load_state_dict(gmodel_base.state_dict())
+                    params_to_update = []
+                    for name, param in net_new.named_parameters():
+                        if name in ('few_classify.weight', 'few_classify.bias') and param.requires_grad:
+                            params_to_update.append(param)
+                    optimizer = torch.optim.SGD(params_to_update, lr=args.fine_tune_lr)
 
                     for j in range(args.fine_tune_steps):
-                        net_new.zero_grad()
-                        with torch.autocast('cuda', enabled=False):
-                            X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup, use_amp=False)
+                        optimizer.zero_grad()
+                        with torch.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
+                            X_out_sup, X_transformer_out_sup, out = net_new(
+                                X_total_sup, use_amp=use_amp, amp_dtype=amp_dtype
+                            )
                             losses = F.cross_entropy(out, support_labels, reduction='none')
-                        losses.mean().backward()
-                        with torch.no_grad():
-                            params_to_update = []
-                            for name, param in net_new.named_parameters():
-                                if name in ('few_classify.weight', 'few_classify.bias') and param.requires_grad:
-                                    params_to_update.append(param)
-                            for param in params_to_update:
-                                if param.grad is None:
-                                    continue
-                                param.data.add_(-args.fine_tune_lr * param.grad)
+                        scaler.scale(losses.mean()).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
 
                     X_out_query, _, out = net_new(X_total_query, use_amp=use_amp, amp_dtype=amp_dtype)
                     X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup, use_amp=use_amp, amp_dtype=amp_dtype)
@@ -717,7 +719,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     query_features = torch.nan_to_num(l2_normalize(X_out_query), nan=0.0, posinf=0.0, neginf=0.0).float()
 
                     clf = LogisticRegression(support_features.size(1), N).to(support_features.device).float()
-                    with torch.autocast('cuda', enabled=False):
+                    with torch.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                         clf.fit(support_features, support_labels, max_iter=1000)
                         with torch.inference_mode():
                             out = clf.predict_proba(query_features)
