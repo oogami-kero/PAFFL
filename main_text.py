@@ -419,7 +419,15 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
         def train_epoch(epoch, mode='train'):
             nonlocal dp_optimizer, head_optimizer, tl_optimizer, gmodel, base_model, last_loss
-    
+
+            def _has_grads(optimizer):
+                """Return True if any parameter of optimizer has a gradient."""
+                for group in optimizer.param_groups:
+                    for param in group['params']:
+                        if param.grad is not None:
+                            return True
+                return False
+
             if mode == 'train':
                 loss_all = 0
                 N, K, Q = get_n_k_q(args, mode='train')
@@ -575,35 +583,43 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         scaler.step(optimizer)
                         scaler.update()
 
-                    X_out_query, _, out = net_new(X_total_query, use_amp=use_amp, amp_dtype=amp_dtype)
-                    X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup, use_amp=use_amp, amp_dtype=amp_dtype)
-
-                    X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
-                    for name, param in gmodel.named_parameters():
-                        if 'transformer' in name:
-                            param.requires_grad_(False)
-                    X_out_all, x_all, out_all = gmodel(
-                        torch.cat([X_total_sup, X_total_query], 0),
-                        all_classify=True,
-                        use_amp=use_amp,
-                        amp_dtype=amp_dtype,
-                    )
-                    for name, param in gmodel.named_parameters():
-                        if 'transformer' in name:
-                            param.requires_grad_(True)
-                    out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
-                    out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
-                    #############################
-                    # Q=K here update for all-model
-                    for j in range(Q):
-                        contras_loss, similarity = InforNCE_Loss(
-                            X_transformer_out_sup[j], out_sup[(j + 1) % Q], tau=0.5
+                    with torch.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
+                        X_out_query, _, out = net_new(
+                            X_total_query, use_amp=use_amp, amp_dtype=amp_dtype
                         )
-                        loss_all += contras_loss / Q *0.1
-                    loss_all += loss_ce(out_all, y_total)
+                        X_out_sup, X_transformer_out_sup, _ = net_new(
+                            X_total_sup, use_amp=use_amp, amp_dtype=amp_dtype
+                        )
 
-                loss_all.backward()
-                if hasattr(dp_optimizer, 'params'):
+                        X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
+                        for name, param in gmodel.named_parameters():
+                            if 'transformer' in name:
+                                param.requires_grad_(False)
+                        X_out_all, x_all, out_all = gmodel(
+                            torch.cat([X_total_sup, X_total_query], 0),
+                            all_classify=True,
+                            use_amp=use_amp,
+                            amp_dtype=amp_dtype,
+                        )
+                        for name, param in gmodel.named_parameters():
+                            if 'transformer' in name:
+                                param.requires_grad_(True)
+                        out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
+                        out_query = X_out_all[N * K:].reshape([N, Q, -1]).transpose(0, 1)
+                        #############################
+                        # Q=K here update for all-model
+                        for j in range(Q):
+                            contras_loss, similarity = InforNCE_Loss(
+                                X_transformer_out_sup[j], out_sup[(j + 1) % Q], tau=0.5
+                            )
+                            loss_all += contras_loss / Q *0.1
+                        loss_all += loss_ce(out_all, y_total)
+
+                scaler.scale(loss_all).backward()
+                dp_has_grad = _has_grads(dp_optimizer)
+                head_has_grad = _has_grads(head_optimizer)
+                tl_has_grad = tl_optimizer is not None and _has_grads(tl_optimizer)
+                if dp_has_grad and hasattr(dp_optimizer, 'params'):
                     for _, param in dp_named_params:
                         if hasattr(param, 'grad_sample') and param.grad_sample is not None:
                             param.grad_sample = param.grad_sample.float()
@@ -619,35 +635,38 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         grad_norm = param.grad.detach().norm(2).item()
                         prev = args.grad_norms_ma.get(name, grad_norm)
                         args.grad_norms_ma[name] = grad_ma_decay * prev + (1 - grad_ma_decay) * grad_norm
-                dp_optimizer.step()
-                head_optimizer.step()
-                if tl_optimizer is not None:
-                    tl_optimizer.step()
+                if dp_has_grad:
+                    scaler.step(dp_optimizer)
+                if head_has_grad:
+                    scaler.step(head_optimizer)
+                if tl_has_grad:
+                    scaler.step(tl_optimizer)
+                scaler.update()
                 ############################
-    
-                    for name, param in gmodel.named_parameters():
-                        if 'transformer' in name:
-                            param.requires_grad_(False)
-                    if isinstance(gmodel, GradSampleModule):
-                        gmodel.disable_hooks()
-                    with torch.no_grad():
-                        X_out_all, x_all, out_all = gmodel(
-                            torch.cat([X_total_sup, X_total_query], 0),
-                            all_classify=True,
-                            use_amp=use_amp,
-                            amp_dtype=amp_dtype,
-                        )
-                    if isinstance(gmodel, GradSampleModule):
-                        gmodel.enable_hooks()
-                    for name, param in gmodel.named_parameters():
-                        if 'transformer' in name:
-                            param.requires_grad_(True)
-                    ###################################
-                    # few_classify update
-                    params_to_update = []
-                    for name, param in net_new.named_parameters():
-                        if name in ('few_classify.weight', 'few_classify.bias') or 'transformer' in name:
-                            params_to_update.append((name, param))
+
+                for name, param in gmodel.named_parameters():
+                    if 'transformer' in name:
+                        param.requires_grad_(False)
+                if isinstance(gmodel, GradSampleModule):
+                    gmodel.disable_hooks()
+                with torch.no_grad():
+                    X_out_all, x_all, out_all = gmodel(
+                        torch.cat([X_total_sup, X_total_query], 0),
+                        all_classify=True,
+                        use_amp=use_amp,
+                        amp_dtype=amp_dtype,
+                    )
+                if isinstance(gmodel, GradSampleModule):
+                    gmodel.enable_hooks()
+                for name, param in gmodel.named_parameters():
+                    if 'transformer' in name:
+                        param.requires_grad_(True)
+                ###################################
+                # few_classify update
+                params_to_update = []
+                for name, param in net_new.named_parameters():
+                    if name in ('few_classify.weight', 'few_classify.bias') or 'transformer' in name:
+                        params_to_update.append((name, param))
 
                     #meta-update few-classifier on query
                     losses = F.cross_entropy(out, query_labels, reduction='none')
