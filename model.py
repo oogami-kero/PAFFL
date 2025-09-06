@@ -623,8 +623,11 @@ class LeNetContainer(nn.Module):
 
 ### Moderate size of CNN for CIFAR-10 dataset
 class ModerateCNN(nn.Module):
-    def __init__(self, output_dim=10):
+    def __init__(self, output_dim=10, dropout_p=0.0):
         super(ModerateCNN, self).__init__()
+
+        conv_dropout = nn.Dropout2d(p=dropout_p) if dropout_p > 0 else nn.Identity()
+
         self.conv_layer = nn.Sequential(
             # Conv Layer block 1
             nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1),
@@ -639,7 +642,7 @@ class ModerateCNN(nn.Module):
             nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
             nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Dropout2d(p=0.05),
+            conv_dropout,
 
             # Conv Layer block 3
             nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
@@ -649,15 +652,18 @@ class ModerateCNN(nn.Module):
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
 
+        fc_dropout1 = nn.Dropout(p=dropout_p) if dropout_p > 0 else nn.Identity()
+        fc_dropout2 = nn.Dropout(p=dropout_p) if dropout_p > 0 else nn.Identity()
+
         self.fc_layer = nn.Sequential(
-            nn.Dropout(p=0.1),
+            fc_dropout1,
             # nn.Linear(4096, 1024),
             nn.Linear(4096, 512),
             nn.ReLU(inplace=False),
             # nn.Linear(1024, 512),
             nn.Linear(512, 512),
             nn.ReLU(inplace=False),
-            nn.Dropout(p=0.1),
+            fc_dropout2,
             nn.Linear(512, output_dim)
         )
 
@@ -670,8 +676,9 @@ class ModerateCNN(nn.Module):
 
 ### Moderate size of CNN for CIFAR-10 dataset
 class ModerateCNNCeleba(nn.Module):
-    def __init__(self):
+    def __init__(self, dropout_p=0.0):
         super(ModerateCNNCeleba, self).__init__()
+
         self.conv_layer = nn.Sequential(
             # Conv Layer block 1
             nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1),
@@ -696,15 +703,18 @@ class ModerateCNNCeleba(nn.Module):
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
 
+        fc_dropout1 = nn.Dropout(p=dropout_p) if dropout_p > 0 else nn.Identity()
+        fc_dropout2 = nn.Dropout(p=dropout_p) if dropout_p > 0 else nn.Identity()
+
         self.fc_layer = nn.Sequential(
-            nn.Dropout(p=0.1),
+            fc_dropout1,
             # nn.Linear(4096, 1024),
             nn.Linear(4096, 512),
             nn.ReLU(inplace=False),
             # nn.Linear(1024, 512),
             nn.Linear(512, 512),
             nn.ReLU(inplace=False),
-            nn.Dropout(p=0.1),
+            fc_dropout2,
             nn.Linear(512, 2)
         )
 
@@ -717,8 +727,11 @@ class ModerateCNNCeleba(nn.Module):
 
 
 class ModerateCNNMNIST(nn.Module):
-    def __init__(self):
+    def __init__(self, dropout_p=0.0):
         super(ModerateCNNMNIST, self).__init__()
+
+        conv_dropout = nn.Dropout2d(p=dropout_p) if dropout_p > 0 else nn.Identity()
+
         self.conv_layer = nn.Sequential(
             # Conv Layer block 1
             nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1),
@@ -733,7 +746,7 @@ class ModerateCNNMNIST(nn.Module):
             nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
             nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Dropout2d(p=0.05),
+            conv_dropout,
 
             # Conv Layer block 3
             nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
@@ -743,13 +756,16 @@ class ModerateCNNMNIST(nn.Module):
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
 
+        fc_dropout1 = nn.Dropout(p=dropout_p) if dropout_p > 0 else nn.Identity()
+        fc_dropout2 = nn.Dropout(p=dropout_p) if dropout_p > 0 else nn.Identity()
+
         self.fc_layer = nn.Sequential(
-            nn.Dropout(p=0.1),
+            fc_dropout1,
             nn.Linear(2304, 1024),
             nn.ReLU(inplace=False),
             nn.Linear(1024, 512),
             nn.ReLU(inplace=False),
-            nn.Dropout(p=0.1),
+            fc_dropout2,
             nn.Linear(512, 10)
         )
 
@@ -761,10 +777,11 @@ class ModerateCNNMNIST(nn.Module):
 
 
 class ModerateCNNContainer(nn.Module):
-    def __init__(self, input_channels, num_filters, kernel_size, input_dim, hidden_dims, output_dim=10):
+    def __init__(self, input_channels, num_filters, kernel_size, input_dim, hidden_dims, output_dim=10, dropout_p=0.0):
         super(ModerateCNNContainer, self).__init__()
 
-        ##
+        conv_dropout = nn.Dropout2d(p=dropout_p) if dropout_p > 0 else nn.Identity()
+
         self.conv_layer = nn.Sequential(
             # Conv Layer block 1
             nn.Conv2d(in_channels=input_channels, out_channels=num_filters[0], kernel_size=kernel_size, padding=1),
@@ -779,7 +796,7 @@ class ModerateCNNContainer(nn.Module):
             nn.Conv2d(in_channels=num_filters[2], out_channels=num_filters[3], kernel_size=kernel_size, padding=1),
             nn.ReLU(inplace=False),
             nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Dropout2d(p=0.05),
+            conv_dropout,
 
             # Conv Layer block 3
             nn.Conv2d(in_channels=num_filters[3], out_channels=num_filters[4], kernel_size=kernel_size, padding=1),
@@ -789,13 +806,16 @@ class ModerateCNNContainer(nn.Module):
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
 
+        fc_dropout1 = nn.Dropout(p=dropout_p) if dropout_p > 0 else nn.Identity()
+        fc_dropout2 = nn.Dropout(p=dropout_p) if dropout_p > 0 else nn.Identity()
+
         self.fc_layer = nn.Sequential(
-            nn.Dropout(p=0.1),
+            fc_dropout1,
             nn.Linear(input_dim, hidden_dims[0]),
             nn.ReLU(inplace=False),
             nn.Linear(hidden_dims[0], hidden_dims[1]),
             nn.ReLU(inplace=False),
-            nn.Dropout(p=0.1),
+            fc_dropout2,
             nn.Linear(hidden_dims[1], output_dim)
         )
 
@@ -1104,7 +1124,7 @@ class LSTMAtt(nn.Module):
         u = args.induct_rnn_dim
         da = args.induct_att_dim
 
-        self.rnn = RNN(self.input_dim, u, 1, True, 0.5)
+        self.rnn = RNN(self.input_dim, u, 1, True, args.dropout_p)
 
         # Attention
         self.head = nn.Parameter(torch.Tensor(da, 1).uniform_(-0.1, 0.1))
@@ -1120,7 +1140,7 @@ class LSTMAtt(nn.Module):
 
         self.all_classify = nn.Linear(out_dim, total_classes)
 
-        encoder_layer = nn.TransformerEncoderLayer(d_model=self.ebd_dim, nhead=4, batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.ebd_dim, nhead=4, batch_first=True, dropout=args.dropout_p)
         transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
         if getattr(args, 'dp_mode', 'off') != 'off':
             self.transformer = ModuleValidator.fix(transformer)
