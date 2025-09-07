@@ -910,6 +910,8 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
     clipped = []
     scales = []
     norms = []
+    total_norm = 0.0
+    total_clipped = 0.0
     layer_scales: dict[str, list[float]] = {}
     for cid, delta in deltas.items():
         client = {}
@@ -923,12 +925,14 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
             client[name] = tensor * scale
             scales.append(scale)
             norms.append(norm)
+            total_norm += norm
+            total_clipped += min(norm, clip)
             layer_scales.setdefault(name, []).append(scale)
         clipped.append(client)
     num_clients = len(clipped) or 1
     mean_norm = float(np.mean(norms)) if norms else 0.0
     median_norm = float(np.median(norms)) if norms else 0.0
-    mean_scale = float(np.mean(scales)) if scales else 1.0
+    mean_scale = float(total_clipped / (total_norm + 1e-12))
     layer_mean_scales = {k: float(np.mean(v)) for k, v in layer_scales.items()}
     logging.info('Norm stats - mean: %.4f median: %.4f', mean_norm, median_norm)
     logging.info('Scale stats - mean: %.4f max: %.4f', mean_scale, float(np.max(scales)) if scales else 1.0)
@@ -1215,6 +1219,7 @@ if __name__ == '__main__':
                 mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales = aggregate_deltas(
                     global_w, deltas, args, layer_clips, noise_multipliers
                 )
+                logging.info('Aggregate mean scale: %.4f', mean_scale)
                 decay = 0.9
                 for name, s in layer_mean_scales.items():
                     scale_ema[name] = decay * scale_ema.get(name, s) + (1 - decay) * s
