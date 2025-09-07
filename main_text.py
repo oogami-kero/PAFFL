@@ -27,6 +27,8 @@ from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_spl
 
 warnings.filterwarnings('ignore')
 
+layer_clips: dict[str, float] = {}
+
 from collections import defaultdict
 
 fine_split=defaultdict(list)
@@ -864,73 +866,38 @@ def aggregate_deltas(
     global_w,
     deltas,
     args,
+    layer_clips,
     noise_multipliers: dict[str, float] | None = None,
     reset_bn: bool = False,
 ):
-    """Aggregate client deltas with clipping and noise.
-
-    Noise is scaled by the number of participating clients. When
-    ``noise_multipliers`` is provided, parameter-specific multipliers are applied
-    on top of the base noise multiplier ``args.dp_noise``.
-
-    Args:
-        global_w (dict): Global model weights to be updated.
-        deltas (dict): Client updates keyed by client id.
-        args (Namespace): Training arguments.
-        noise_multipliers (dict, optional): Parameter-specific noise multipliers.
-        reset_bn (bool, optional): Reset BatchNorm statistics after aggregation.
-
-    Returns:
-        tuple: ``(mean_norm, median_norm, mean_scale, eta_eff)`` statistics and
-        effective learning rate for this round.
-    """
+    """Aggregate client deltas with per-parameter clipping and noise."""
     clipped = []
     scales = []
     norms = []
     for delta in deltas.values():
-        flat = torch.cat([
-            v.view(-1)
-            for k, v in delta.items()
-            if not any(
-                s in k
-                for s in (
-                    'running_mean',
-                    'running_var',
-                    'num_batches_tracked',
-                    'few_classify',
-                    'transform_layer',
-                )
-            )
-        ])
-        norm = torch.norm(flat).item()
-        scale = min(1.0, args.dp_clip / (norm + 1e-12))
-        scales.append(scale)
-        norms.append(norm)
-        clipped.append({k: v * scale for k, v in delta.items() if 'few_classify' not in k and 'transform_layer' not in k})
+        client = {}
+        for name, tensor in delta.items():
+            if any(s in name for s in ('running_mean', 'running_var', 'num_batches_tracked', 'few_classify', 'transform_layer')):
+                continue
+            clip = layer_clips.get(name, args.dp_clip)
+            norm = torch.norm(tensor).item()
+            scale = min(1.0, clip / (norm + 1e-12))
+            client[name] = tensor * scale
+            scales.append(scale)
+            norms.append(norm)
+        clipped.append(client)
     num_clients = len(clipped) or 1
     mean_norm = float(np.mean(norms)) if norms else 0.0
     median_norm = float(np.median(norms)) if norms else 0.0
     mean_scale = float(np.mean(scales)) if scales else 1.0
     logging.info('Norm stats - mean: %.4f median: %.4f', mean_norm, median_norm)
     logging.info('Scale stats - mean: %.4f max: %.4f', mean_scale, float(np.max(scales)) if scales else 1.0)
-    if args.dp_constant_noise:
-        base_noise_std = args.dp_noise / num_clients
-    else:
-        base_noise_std = args.dp_noise * args.dp_clip / num_clients
-    logging.info(
-        'Effective noise std: %.6f (dp_noise=%.4f, dp_clip=%.4f, clients=%d, constant_noise=%s)',
-        base_noise_std,
-        args.dp_noise,
-        args.dp_clip,
-        num_clients,
-        args.dp_constant_noise,
-    )
     avg_norm_sq = 0.0
     noise_norm_sq = 0.0
     step_norm_sq = 0.0
     updates = {}
     for key in global_w:
-        if 'few_classify' in key:
+        if 'few_classify' in key or 'transform_layer' in key:
             continue
         if any(s in key for s in ('running_mean', 'running_var', 'num_batches_tracked')):
             global_w[key] += torch.stack([d[key] for d in deltas.values()]).mean(0)
@@ -940,22 +907,13 @@ def aggregate_deltas(
                 else:
                     global_w[key].zero_()
             continue
-        if 'transform_layer' in key:
-            continue
         stacked = torch.stack([d[key] for d in clipped])
         avg_update = stacked.mean(dim=0)
         noise_mult = args.dp_noise
         if noise_multipliers is not None:
             noise_mult = noise_multipliers.get(key, args.dp_noise)
-        if args.dp_constant_noise:
-            noise = torch.randn_like(avg_update) * noise_mult / num_clients
-        else:
-            noise = (
-                torch.randn_like(avg_update)
-                * noise_mult
-                * args.dp_clip
-                / num_clients
-            )
+        noise_std = noise_mult * layer_clips.get(key, args.dp_clip) / num_clients
+        noise = torch.randn_like(avg_update) * noise_std
         update = avg_update + noise
         updates[key] = update
         avg_norm_sq += avg_update.pow(2).sum().item()
@@ -1104,6 +1062,8 @@ if __name__ == '__main__':
 
     global_models, global_model_meta_data, global_layer_type = init_nets(args.net_config, 1, args, device='gpu')
     global_model = global_models[0]
+    layer_clips.clear()
+    layer_clips.update({name: args.dp_clip for name in global_model.state_dict()})
     n_comm_rounds = args.comm_round
     if args.load_model_file and args.alg != 'plot_visual':
         global_model.load_state_dict(torch.load(args.load_model_file))
@@ -1195,7 +1155,9 @@ if __name__ == '__main__':
                 for name in noise_multipliers:
                     if name.endswith('bias'):
                         noise_multipliers[name] *= 0.5
-                mean_norm, median_norm, mean_scale, eta_eff = aggregate_deltas(global_w, deltas, args, noise_multipliers)
+                mean_norm, median_norm, mean_scale, eta_eff = aggregate_deltas(
+                    global_w, deltas, args, layer_clips, noise_multipliers
+                )
                 decay = 0.9
                 if hasattr(args, 'scale_ema'):
                     args.scale_ema = decay * args.scale_ema + (1 - decay) * mean_scale
@@ -1207,6 +1169,8 @@ if __name__ == '__main__':
                     args.log_dp_clip = math.log(args.dp_clip)
                     if args.dp_noise_scale is not None and not args.dp_constant_noise:
                         args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
+                    for k in layer_clips:
+                        layer_clips[k] = args.dp_clip
                     args.bootstrap_done = True
                 s_inst = mean_scale
                 s_ema = args.scale_ema
@@ -1229,6 +1193,8 @@ if __name__ == '__main__':
                     args.dp_clip = math.exp(args.log_dp_clip)
                     if args.dp_noise_scale is not None and not args.dp_constant_noise:
                         args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
+                    for k in layer_clips:
+                        layer_clips[k] = args.dp_clip
                     logging.info(
                         'Mean-scale control — s*: %.3f, s̄: %.3f (EMA %.3f), clip: %.2f → %.2f, mean_norm: %.1f, median_norm: %.1f, adapt_period: %d, gain: %.1f',
                         target,
