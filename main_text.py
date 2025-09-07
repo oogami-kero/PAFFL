@@ -1262,6 +1262,13 @@ if __name__ == '__main__':
                 for key in delta_w:
                     delta_w[key] = old_w[key] - global_w[key]
                     moment_v[key] = args.server_momentum * moment_v[key] + (1 - args.server_momentum) * delta_w[key]
+                unscaled_moment_norm = 0.0
+                for v in moment_v.values():
+                    unscaled_moment_norm += torch.norm(v).item() ** 2
+                unscaled_moment_norm = math.sqrt(unscaled_moment_norm)
+                eta_cap = args.target_step / max(unscaled_moment_norm, 1e-12)
+                eta_eff = min(args.server_lr, eta_cap)
+                for key in global_w:
                     global_w[key] = old_w[key] - eta_eff * moment_v[key]
 
             global_model.load_state_dict(global_w)
