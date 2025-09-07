@@ -1293,7 +1293,7 @@ if __name__ == '__main__':
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:
-                    delta_w[key] = old_w[key] - global_w[key]
+                    delta_w[key] = global_w[key] - old_w[key]
                     moment_v[key] = args.server_momentum * moment_v[key] + (1 - args.server_momentum) * delta_w[key]
                 unscaled_moment_norm = 0.0
                 for v in moment_v.values():
@@ -1302,7 +1302,7 @@ if __name__ == '__main__':
                 eta_cap = args.target_step / max(unscaled_moment_norm, 1e-12)
                 eta_eff = min(args.server_lr, eta_cap)
                 for key in global_w:
-                    global_w[key] = old_w[key] - eta_eff * moment_v[key]
+                    global_w[key] = old_w[key] + eta_eff * moment_v[key]
 
             global_model.load_state_dict(global_w)
 
@@ -1325,3 +1325,7 @@ if __name__ == '__main__':
                 print('>> Early stopping triggered')
                 logger.info('>> Early stopping triggered')
                 break
+
+    if args.server_momentum:
+        for key in moment_v:
+            moment_v[key] = 0
