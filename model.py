@@ -984,12 +984,12 @@ class ModelFed_Adp(nn.Module):
             num_ftrs = 84
         elif base_model == 'resnet12':
 
-            if args.dataset=='FC100':
-                self.features = resnet12(avg_pool=True, drop_rate=0.1, dropblock_size=2, dp_mode=dp_mode)
+            if args.dataset == 'FC100':
+                self.features = resnet12(avg_pool=True, drop_rate=args.dropout_p, dropblock_size=2, dp_mode=dp_mode)
                 #num_ftrs=2560
-                num_ftrs=640
+                num_ftrs = 640
             else:
-                self.features = resnet12(avg_pool=True, drop_rate=0.1, dp_mode=dp_mode)
+                self.features = resnet12(avg_pool=True, drop_rate=args.dropout_p, dp_mode=dp_mode)
                 #num_ftrs = 16000
                 num_ftrs = 640
 
