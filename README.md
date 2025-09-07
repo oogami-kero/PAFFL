@@ -52,7 +52,7 @@ The repository now includes optional support for a **personalised transformation
   * `--dp_noise`: fixed noise multiplier (default) **or** `--dp_noise_scale` to scale noise with the clip via `sigma = scale * clip`
   * `--dp_delta`: target delta for privacy accounting (default `1e-5`)
   * `--print_eps`: output the current ε after each communication round when set to `1`
-  * ε uses the minimum σ<sub>l</sub>/C<sub>l</sub> across layers when noise or clip ratios differ
+  * ε uses the minimum σ<sub>l</sub> across layers when noise multipliers differ
 
 Examples:
 
