@@ -965,16 +965,17 @@ def aggregate_deltas(
     noise_norm = noise_norm_sq ** 0.5
     unscaled_step_norm = step_norm_sq ** 0.5
     logging.info('||avg||=%.4f ||noise||=%.4f ||u||=%.4f', avg_norm, noise_norm, unscaled_step_norm)
-    eta_cap = args.target_step / max(unscaled_step_norm, 1e-12)
+    eta_cap = args.target_step / max(avg_norm, 1e-12)
     eta_eff = min(args.server_lr, eta_cap)
     step_norm = eta_eff * unscaled_step_norm
     logging.info(
-        'server_lr(base)=%.4g eta_eff=%.4g (cap=%s) ||step||=%.4f ratio(step/avg)=%.3f',
+        'server_lr(base)=%.4g eta_eff=%.4g (cap=%s) ||step||=%.4f ratio(step/avg)=%.3f ||u||=%.4f',
         args.server_lr,
         eta_eff,
         'ON' if eta_eff < args.server_lr else 'off',
         step_norm,
         step_norm / max(avg_norm, 1e-12),
+        unscaled_step_norm,
     )
     for key, update in updates.items():
         if args.server_momentum == 0:
