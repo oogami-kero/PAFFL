@@ -1004,7 +1004,8 @@ class ModelFed_Adp(nn.Module):
 
         self.all_classify = nn.Linear(out_dim, total_classes)
 
-        encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4, batch_first=True)
+        dropout_p = getattr(args, 'dropout_p', 0.0)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4, batch_first=True, dropout=dropout_p)
         transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
         if getattr(args, 'dp_mode', 'off') != 'off':
             self.transformer = ModuleValidator.fix(transformer)
