@@ -1083,6 +1083,8 @@ if __name__ == '__main__':
     for name in noise_multipliers:
         if name.endswith('bias'):
             noise_multipliers[name] *= 0.5
+    for sigma in noise_multipliers.values():
+        assert sigma >= 0.01, 'Noise multiplier below accountant resolution'
     scale_ema.clear()
     scale_ema.update({name: args.dp_target_mean_scale for name in global_model.state_dict()})
     total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
@@ -1091,7 +1093,6 @@ if __name__ == '__main__':
         for k in layer_clips:
             old_clip = layer_clips[k]
             layer_clips[k] = old_clip * rescale
-            noise_multipliers[k] = dp_utils.scale_noise_to_clip(noise_multipliers[k], old_clip, layer_clips[k])
     n_comm_rounds = args.comm_round
     if args.load_model_file and args.alg != 'plot_visual':
         global_model.load_state_dict(torch.load(args.load_model_file))
@@ -1170,8 +1171,7 @@ if __name__ == '__main__':
             elif args.dp_mode == 'server':
                 dp_steps += 1
             if args.dp_mode != 'off':
-                noise_levels = list(noise_multipliers.values())
-                noise_for_eps = args.dp_noise if len(set(noise_levels)) <= 1 else min(noise_levels)
+                noise_for_eps = args.dp_noise
                 epsilon = dp_utils.compute_epsilon(
                     dp_steps,
                     noise_for_eps,
@@ -1188,14 +1188,10 @@ if __name__ == '__main__':
                 for name, s in layer_mean_scales.items():
                     scale_ema[name] = decay * scale_ema.get(name, s) + (1 - decay) * s
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
-                    old_clip = args.dp_clip
                     args.dp_clip = min(max(args.dp_target_mean_scale * median_norm, args.dp_clip_min), args.dp_clip_max)
                     args.log_dp_clip = math.log(args.dp_clip)
-                    if args.dp_noise_scale is not None and not args.dp_constant_noise:
-                        args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
                     for k in layer_clips:
                         layer_clips[k] = args.dp_clip
-                        noise_multipliers[k] = dp_utils.scale_noise_to_clip(noise_multipliers[k], old_clip, args.dp_clip)
                     args.bootstrap_done = True
                     total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
                     if total > 0:
@@ -1203,7 +1199,6 @@ if __name__ == '__main__':
                         for k in layer_clips:
                             old = layer_clips[k]
                             layer_clips[k] = old * rescale
-                            noise_multipliers[k] = dp_utils.scale_noise_to_clip(noise_multipliers[k], old, layer_clips[k])
                 target = args.dp_target_mean_scale
                 if (round + 1) % args.dp_adapt_period == 0:
                     updated = []
@@ -1222,7 +1217,6 @@ if __name__ == '__main__':
                         new_clip = math.exp(log_clip)
                         if new_clip != old_clip:
                             layer_clips[name] = new_clip
-                            noise_multipliers[name] = dp_utils.scale_noise_to_clip(noise_multipliers[name], old_clip, new_clip)
                             updated.append((name, old_clip, new_clip, s_inst, s_ema))
                     if updated:
                         total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
@@ -1233,7 +1227,6 @@ if __name__ == '__main__':
                                 new_clip = old_clip * rescale
                                 if new_clip != old_clip:
                                     layer_clips[k] = new_clip
-                                    noise_multipliers[k] = dp_utils.scale_noise_to_clip(noise_multipliers[k], old_clip, new_clip)
                         logging.info('Layer-wise mean-scale control:')
                         for name, old_clip, new_clip, s_inst, s_ema in updated:
                             logging.info('%s — s*: %.3f, s̄: %.3f (EMA %.3f), clip: %.2f → %.2f',
