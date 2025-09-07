@@ -21,7 +21,7 @@ from utils import *
 from opacus import PrivacyEngine
 from opacus.grad_sample import GradSampleModule
 import dp_utils
-from dp_utils import remove_dp_hooks
+from dp_utils import remove_dp_hooks, scale_noise_to_clip
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -1256,6 +1256,10 @@ if __name__ == '__main__':
                         new_clip = math.exp(log_clip)
                         if new_clip != old_clip:
                             layer_clips[name] = new_clip
+                            if name in noise_multipliers:
+                                noise_multipliers[name] = scale_noise_to_clip(
+                                    noise_multipliers[name], old_clip, new_clip
+                                )
                             updated.append((name, old_clip, new_clip, s_inst, s_ema))
                     if updated:
                         total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
@@ -1266,6 +1270,10 @@ if __name__ == '__main__':
                                 new_clip = old_clip * rescale
                                 if new_clip != old_clip:
                                     layer_clips[k] = new_clip
+                                    if k in noise_multipliers:
+                                        noise_multipliers[k] = scale_noise_to_clip(
+                                            noise_multipliers[k], old_clip, new_clip
+                                        )
                         logging.info('Layer-wise mean-scale control:')
                         for name, old_clip, new_clip, s_inst, s_ema in updated:
                             logging.info('%s — s*: %.3f, s̄: %.3f (EMA %.3f), clip: %.2f → %.2f',
