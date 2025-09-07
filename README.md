@@ -52,6 +52,7 @@ The repository now includes optional support for a **personalised transformation
   * `--dp_noise`: fixed noise multiplier (default) **or** `--dp_noise_scale` to scale noise with the clip via `sigma = scale * clip`
   * `--dp_delta`: target delta for privacy accounting (default `1e-5`)
   * `--print_eps`: output the current ε after each communication round when set to `1`
+  * ε uses the minimum σ<sub>l</sub>/C<sub>l</sub> across layers when noise or clip ratios differ
 
 Examples:
 
@@ -65,7 +66,7 @@ python main_image.py --dataset miniImageNet --dp_mode off
 # FedAvgM with server learning rate
 python main_image.py --dataset miniImageNet --server_momentum 0.9 --server_lr 0.1
 ```
-When `--print_eps 1`, the current ε and δ are printed after each round.
+When `--print_eps 1`, the current ε and δ are printed after each round using the minimum noise-to-clip ratio across layers.
 
 * Enable server momentum with `--server_momentum <m>` and set the server learning rate with `--server_lr <lr>` to use FedAvgM for faster convergence. A good starting point is `lr ≈ 1 - m`.
 * Cap the server update norm with `--target_step <s>` to limit the L2 norm of the aggregated step after scaling. Values around `1.0` work well; tune by monitoring the logged `||u||` and set `s` either as an absolute norm or as a fraction of the typical signal norm.

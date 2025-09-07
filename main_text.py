@@ -217,7 +217,12 @@ def get_args():
     parser.add_argument('--dp_mode', choices=['local', 'server', 'off'], default='server')
     parser.add_argument('--dp_accountant', choices=['rdp', 'prv'], default='rdp',
                         help='DP accountant to estimate the privacy budget')
-    parser.add_argument('--print_eps', type=int, default=0, help='print final privacy budget')
+    parser.add_argument(
+        '--print_eps',
+        type=int,
+        default=0,
+        help='print final privacy budget (uses minimum noise/clip ratio across layers)',
+    )
     parser.add_argument('--use_amp', action='store_true', help='enable mixed precision training')
     parser.add_argument('--amp_dtype', choices=['fp16', 'bf16'], default='fp16',
                         help='dtype for AMP autocast')
@@ -1165,9 +1170,14 @@ if __name__ == '__main__':
             elif args.dp_mode == 'server':
                 dp_steps += 1
             if args.dp_mode != 'off':
+                ratios = [
+                    noise_multipliers[name] / layer_clips.get(name, args.dp_clip)
+                    for name in noise_multipliers
+                ]
+                noise_for_eps = args.dp_noise if len(set(ratios)) <= 1 else min(ratios)
                 epsilon = dp_utils.compute_epsilon(
                     dp_steps,
-                    args.dp_noise,
+                    noise_for_eps,
                     args.dp_delta,
                     accountant=args.dp_accountant,
                     sampling_rate=len(participating_ids) / args.n_parties,
