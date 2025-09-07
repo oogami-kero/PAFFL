@@ -1245,7 +1245,7 @@ if __name__ == '__main__':
                     scale_ema[name] = decay * scale_ema.get(name, s) + (1 - decay) * s
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
                     for name, norm_l in layer_norms.items():
-                        layer_clips[name] = args.dp_target_mean_scale * norm_l
+                        layer_clips[name] = max(args.dp_target_mean_scale * norm_l, args.dp_clip_min)
                     total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
                     if total > 0:
                         rescale = args.dp_clip / total
@@ -1264,7 +1264,7 @@ if __name__ == '__main__':
                         e = e_inst if np.sign(e_ema) != np.sign(e_inst) else e_ema
                         delta = -args.dp_adapt_gain * e
                         delta = float(np.clip(delta, -math.log(1.2), math.log(1.2)))
-                        old_clip = layer_clips[name]
+                        old_clip = max(layer_clips[name], args.dp_clip_min)
                         log_clip = math.log(old_clip)
                         log_clip = min(max(log_clip + delta, math.log(args.dp_clip_min)), math.log(args.dp_clip_max))
                         new_clip = math.exp(log_clip)
