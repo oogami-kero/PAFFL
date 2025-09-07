@@ -29,6 +29,7 @@ warnings.filterwarnings('ignore')
 
 layer_clips: dict[str, float] = {}
 scale_ema: dict[str, float] = {}
+layer_norms: dict[str, float] = {}
 noise_multipliers: dict[str, float] = {}
 
 from collections import defaultdict
@@ -905,7 +906,7 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
     Returns
     -------
     tuple
-        mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales
+        mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms
     """
     clipped = []
     scales = []
@@ -913,6 +914,7 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
     total_norm = 0.0
     total_clipped = 0.0
     layer_scales: dict[str, list[float]] = {}
+    layer_norms: dict[str, list[float]] = {}
     for cid, delta in deltas.items():
         client = {}
         for name, tensor in delta.items():
@@ -928,12 +930,14 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
             total_norm += norm
             total_clipped += min(norm, clip)
             layer_scales.setdefault(name, []).append(scale)
+            layer_norms.setdefault(name, []).append(norm)
         clipped.append(client)
     num_clients = len(clipped) or 1
     mean_norm = float(np.mean(norms)) if norms else 0.0
     median_norm = float(np.median(norms)) if norms else 0.0
     mean_scale = float(total_clipped / (total_norm + 1e-12))
     layer_mean_scales = {k: float(np.mean(v)) for k, v in layer_scales.items()}
+    layer_mean_norms = {k: float(np.mean(v)) for k, v in layer_norms.items()}
     logging.info('Norm stats - mean: %.4f median: %.4f', mean_norm, median_norm)
     logging.info('Scale stats - mean: %.4f max: %.4f', mean_scale, float(np.max(scales)) if scales else 1.0)
     avg_norm_sq = 0.0
@@ -989,7 +993,7 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
         else:
             global_w[key] += update
 
-    return mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales
+    return mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms
 
 
 if __name__ == '__main__':
@@ -1216,25 +1220,24 @@ if __name__ == '__main__':
                 )
             eta_eff = args.server_lr
             if args.dp_mode == 'server':
-                mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales = aggregate_deltas(
+                mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms = aggregate_deltas(
                     global_w, deltas, args, layer_clips, noise_multipliers
                 )
                 logging.info('Aggregate mean scale: %.4f', mean_scale)
+                if not layer_norms:
+                    layer_norms.update(layer_mean_norms)
                 decay = 0.9
                 for name, s in layer_mean_scales.items():
                     scale_ema[name] = decay * scale_ema.get(name, s) + (1 - decay) * s
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
-                    args.dp_clip = min(max(args.dp_target_mean_scale * median_norm, args.dp_clip_min), args.dp_clip_max)
-                    args.log_dp_clip = math.log(args.dp_clip)
-                    for k in layer_clips:
-                        layer_clips[k] = args.dp_clip
-                    args.bootstrap_done = True
+                    for name, norm_l in layer_norms.items():
+                        layer_clips[name] = args.dp_target_mean_scale * norm_l
                     total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
                     if total > 0:
                         rescale = args.dp_clip / total
                         for k in layer_clips:
-                            old = layer_clips[k]
-                            layer_clips[k] = old * rescale
+                            layer_clips[k] *= rescale
+                    args.bootstrap_done = True
                 target = args.dp_target_mean_scale
                 if (round + 1) % args.dp_adapt_period == 0:
                     updated = []
