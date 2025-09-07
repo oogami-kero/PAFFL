@@ -1201,11 +1201,8 @@ if __name__ == '__main__':
             elif args.dp_mode == 'server':
                 dp_steps += 1
             if args.dp_mode != 'off':
-                ratios = [
-                    noise_multipliers[name] / layer_clips.get(name, args.dp_clip)
-                    for name in noise_multipliers
-                ]
-                noise_for_eps = args.dp_noise if len(set(ratios)) <= 1 else min(ratios)
+                noise_levels = list(noise_multipliers.values())
+                noise_for_eps = args.dp_noise if len(set(noise_levels)) <= 1 else min(noise_levels)
                 epsilon = dp_utils.compute_epsilon(
                     dp_steps,
                     noise_for_eps,
