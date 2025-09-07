@@ -28,6 +28,8 @@ from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_spl
 warnings.filterwarnings('ignore')
 
 layer_clips: dict[str, float] = {}
+scale_ema: dict[str, float] = {}
+noise_multipliers: dict[str, float] = {}
 
 from collections import defaultdict
 
@@ -237,8 +239,6 @@ def get_args():
         args.dp_noise = 0.0
     args.dp_clip = min(max(args.dp_clip, args.dp_clip_min), args.dp_clip_max)
     args.log_dp_clip = math.log(max(1.0, args.dp_clip))
-    if not args.dp_bootstrap:
-        args.scale_ema = args.dp_target_mean_scale
     return args
 
 
@@ -895,10 +895,17 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
 
 def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None, reset_bn=False):
-    """Aggregate client deltas with per-parameter clipping and noise."""
+    """Aggregate client deltas with per-parameter clipping and noise.
+
+    Returns
+    -------
+    tuple
+        mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales
+    """
     clipped = []
     scales = []
     norms = []
+    layer_scales: dict[str, list[float]] = {}
     for cid, delta in deltas.items():
         client = {}
         for name, tensor in delta.items():
@@ -911,11 +918,13 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
             client[name] = tensor * scale
             scales.append(scale)
             norms.append(norm)
+            layer_scales.setdefault(name, []).append(scale)
         clipped.append(client)
     num_clients = len(clipped) or 1
     mean_norm = float(np.mean(norms)) if norms else 0.0
     median_norm = float(np.median(norms)) if norms else 0.0
     mean_scale = float(np.mean(scales)) if scales else 1.0
+    layer_mean_scales = {k: float(np.mean(v)) for k, v in layer_scales.items()}
     logging.info('Norm stats - mean: %.4f median: %.4f', mean_norm, median_norm)
     logging.info('Scale stats - mean: %.4f max: %.4f', mean_scale, float(np.max(scales)) if scales else 1.0)
     avg_norm_sq = 0.0
@@ -971,7 +980,7 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
         else:
             global_w[key] += update
 
-    return mean_norm, median_norm, mean_scale, eta_eff
+    return mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales
 
 
 if __name__ == '__main__':
@@ -1095,6 +1104,20 @@ if __name__ == '__main__':
     global_model = global_models[0]
     layer_clips.clear()
     layer_clips.update({name: args.dp_clip for name in global_model.state_dict()})
+    noise_multipliers.clear()
+    noise_multipliers.update({name: args.dp_noise for name in global_model.state_dict()})
+    for name in noise_multipliers:
+        if name.endswith('bias'):
+            noise_multipliers[name] *= 0.5
+    scale_ema.clear()
+    scale_ema.update({name: args.dp_target_mean_scale for name in global_model.state_dict()})
+    total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
+    if total > 0:
+        rescale = args.dp_clip / total
+        for k in layer_clips:
+            old_clip = layer_clips[k]
+            layer_clips[k] = old_clip * rescale
+            noise_multipliers[k] = dp_utils.scale_noise_to_clip(noise_multipliers[k], old_clip, layer_clips[k])
     n_comm_rounds = args.comm_round
     if args.load_model_file and args.alg != 'plot_visual':
         global_model.load_state_dict(torch.load(args.load_model_file))
@@ -1182,18 +1205,12 @@ if __name__ == '__main__':
                 )
             eta_eff = args.server_lr
             if args.dp_mode == 'server':
-                noise_multipliers = {name: args.dp_noise for name in global_w}
-                for name in noise_multipliers:
-                    if name.endswith('bias'):
-                        noise_multipliers[name] *= 0.5
-                mean_norm, median_norm, mean_scale, eta_eff = aggregate_deltas(
+                mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales = aggregate_deltas(
                     global_w, deltas, args, layer_clips, noise_multipliers
                 )
                 decay = 0.9
-                if hasattr(args, 'scale_ema'):
-                    args.scale_ema = decay * args.scale_ema + (1 - decay) * mean_scale
-                else:
-                    args.scale_ema = mean_scale
+                for name, s in layer_mean_scales.items():
+                    scale_ema[name] = decay * scale_ema.get(name, s) + (1 - decay) * s
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
                     old_clip = args.dp_clip
                     args.dp_clip = min(max(args.dp_target_mean_scale * median_norm, args.dp_clip_min), args.dp_clip_max)
@@ -1202,42 +1219,50 @@ if __name__ == '__main__':
                         args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
                     for k in layer_clips:
                         layer_clips[k] = args.dp_clip
+                        noise_multipliers[k] = dp_utils.scale_noise_to_clip(noise_multipliers[k], old_clip, args.dp_clip)
                     args.bootstrap_done = True
-                s_inst = mean_scale
-                s_ema = args.scale_ema
+                    total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
+                    if total > 0:
+                        rescale = args.dp_clip / total
+                        for k in layer_clips:
+                            old = layer_clips[k]
+                            layer_clips[k] = old * rescale
+                            noise_multipliers[k] = dp_utils.scale_noise_to_clip(noise_multipliers[k], old, layer_clips[k])
                 target = args.dp_target_mean_scale
-                if ((round + 1) % args.dp_adapt_period == 0 and
-                        abs(s_inst - target) >= args.dp_deadband):
-                    e_ema = s_ema - target
-                    e_inst = s_inst - target
-                    if np.sign(e_ema) != np.sign(e_inst):
-                        e = e_inst
-                    else:
-                        e = e_ema
-                    delta = -args.dp_adapt_gain * e
-                    delta = np.clip(delta, -math.log(1.2), math.log(1.2))
-                    old_clip = args.dp_clip
-                    args.log_dp_clip = min(
-                        max(args.log_dp_clip + delta, math.log(args.dp_clip_min)),
-                        math.log(args.dp_clip_max),
-                    )
-                    args.dp_clip = math.exp(args.log_dp_clip)
-                    if args.dp_noise_scale is not None and not args.dp_constant_noise:
-                        args.dp_noise = dp_utils.scale_noise_to_clip(args.dp_noise, old_clip, args.dp_clip)
-                    for k in layer_clips:
-                        layer_clips[k] = args.dp_clip
-                    logging.info(
-                        'Mean-scale control — s*: %.3f, s̄: %.3f (EMA %.3f), clip: %.2f → %.2f, mean_norm: %.1f, median_norm: %.1f, adapt_period: %d, gain: %.1f',
-                        target,
-                        s_inst,
-                        s_ema,
-                        old_clip,
-                        args.dp_clip,
-                        mean_norm,
-                        median_norm,
-                        args.dp_adapt_period,
-                        args.dp_adapt_gain,
-                    )
+                if (round + 1) % args.dp_adapt_period == 0:
+                    updated = []
+                    for name, s_inst in layer_mean_scales.items():
+                        s_ema = scale_ema.get(name, s_inst)
+                        if abs(s_inst - target) < args.dp_deadband:
+                            continue
+                        e_ema = s_ema - target
+                        e_inst = s_inst - target
+                        e = e_inst if np.sign(e_ema) != np.sign(e_inst) else e_ema
+                        delta = -args.dp_adapt_gain * e
+                        delta = float(np.clip(delta, -math.log(1.2), math.log(1.2)))
+                        old_clip = layer_clips[name]
+                        log_clip = math.log(old_clip)
+                        log_clip = min(max(log_clip + delta, math.log(args.dp_clip_min)), math.log(args.dp_clip_max))
+                        new_clip = math.exp(log_clip)
+                        if new_clip != old_clip:
+                            layer_clips[name] = new_clip
+                            noise_multipliers[name] = dp_utils.scale_noise_to_clip(noise_multipliers[name], old_clip, new_clip)
+                            updated.append((name, old_clip, new_clip, s_inst, s_ema))
+                    if updated:
+                        total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
+                        if total > 0:
+                            rescale = args.dp_clip / total
+                            for k in layer_clips:
+                                old_clip = layer_clips[k]
+                                new_clip = old_clip * rescale
+                                if new_clip != old_clip:
+                                    layer_clips[k] = new_clip
+                                    noise_multipliers[k] = dp_utils.scale_noise_to_clip(noise_multipliers[k], old_clip, new_clip)
+                        logging.info('Layer-wise mean-scale control:')
+                        for name, old_clip, new_clip, s_inst, s_ema in updated:
+                            logging.info('%s — s*: %.3f, s̄: %.3f (EMA %.3f), clip: %.2f → %.2f',
+                                         name, target, s_inst, s_ema, old_clip, new_clip)
+                        logging.info('Current layer clips: %s', layer_clips)
             else:
                 total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
                 fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
@@ -1286,6 +1311,7 @@ if __name__ == '__main__':
             if global_acc > best_acc:
                 torch.save(global_model.state_dict(), args.modeldir+'fedavg/'+'globalmodel'+args.log_file_name+'.pth')
                 torch.save(nets[0].state_dict(), args.modeldir+'fedavg/'+'localmodel0'+args.log_file_name+'.pth')
+                torch.save(layer_clips, args.modeldir+'fedavg/'+'layer_clips'+args.log_file_name+'.pth')
 
             if args.convergence_patience and no_improve >= args.convergence_patience:
                 print('>> Early stopping triggered')
