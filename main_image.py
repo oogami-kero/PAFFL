@@ -935,11 +935,25 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
     num_clients = len(clipped) or 1
     mean_norm = float(np.mean(norms)) if norms else 0.0
     median_norm = float(np.median(norms)) if norms else 0.0
+    unweighted_mean_scale = float(np.mean(scales)) if scales else 1.0
     mean_scale = float(total_clipped / (total_norm + 1e-12))
     layer_mean_scales = {k: float(np.mean(v)) for k, v in layer_scales.items()}
     layer_mean_norms = {k: float(np.mean(v)) for k, v in layer_norms.items()}
+    block_scales = {f'layer{i}': [] for i in range(1, 5)}
+    for name, s in layer_mean_scales.items():
+        for block in block_scales:
+            if name.startswith(block):
+                block_scales[block].append(s)
+                break
+    block_medians = {k: float(np.median(v)) if v else 0.0 for k, v in block_scales.items()}
     logging.info('Norm stats - mean: %.4f median: %.4f', mean_norm, median_norm)
-    logging.info('Scale stats - mean: %.4f max: %.4f', mean_scale, float(np.max(scales)) if scales else 1.0)
+    logging.info(
+        'Scale stats - mean(w): %.4f mean(u): %.4f max: %.4f',
+        mean_scale,
+        unweighted_mean_scale,
+        float(np.max(scales)) if scales else 1.0,
+    )
+    logging.info('Block median scales: %s', ' '.join(f'{k}:{v:.3f}' for k, v in block_medians.items()))
     avg_norm_sq = 0.0
     noise_norm_sq = 0.0
     step_norm_sq = 0.0
