@@ -932,6 +932,9 @@ def aggregate_deltas(global_w, deltas, client_norms, client_scales, args, layer_
     tuple
         mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms
     """
+    def _is_bn_or_bias(name: str, tensor: torch.Tensor) -> bool:
+        return '.bn' in name or name.endswith('.bias') or tensor.dim() == 1
+
     clipped = []
     scales = []
     norms = []
@@ -951,6 +954,9 @@ def aggregate_deltas(global_w, deltas, client_norms, client_scales, args, layer_
                 'transform_layer',
                 'transformer',
             )):
+                continue
+            if _is_bn_or_bias(name, tensor):
+                client[name] = tensor
                 continue
             clip = layer_clips.get(name, args.dp_clip)
             scaled_norm = torch.norm(tensor).item()
@@ -1016,6 +1022,9 @@ def aggregate_deltas(global_w, deltas, client_norms, client_scales, args, layer_
             continue
         stacked = torch.stack([d[key] for d in clipped])
         avg_update = stacked.mean(dim=0)
+        if _is_bn_or_bias(key, global_w[key]):
+            updates[key] = avg_update
+            continue
         noise_mult = args.dp_noise
         if noise_multipliers is not None:
             noise_mult = noise_multipliers.get(key, args.dp_noise)
@@ -1336,9 +1345,13 @@ if __name__ == '__main__':
                 logging.info('Client mean scale: %.4f', float(np.mean(list(client_scales.values()))))
                 decay = 0.9
                 for name, norm in layer_mean_norms.items():
+                    if '.bn' in name or name.endswith('.bias'):
+                        continue
                     norm_ema[name] = decay * norm_ema.get(name, norm) + (1 - decay) * norm
                     clip_min[name] = max(1e-4, args.dp_k_min * norm_ema[name])
                 for name, s in layer_mean_scales.items():
+                    if '.bn' in name or name.endswith('.bias'):
+                        continue
                     scale_ema[name] = decay * scale_ema.get(name, s) + (1 - decay) * s
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
                     for name in norm_ema:
@@ -1347,6 +1360,8 @@ if __name__ == '__main__':
                     args.bootstrap_done = True
                 if (round + 1) % args.dp_adapt_period == 0:
                     for name in layer_mean_scales:
+                        if '.bn' in name or name.endswith('.bias'):
+                            continue
                         log_clip[name] = log_clip.get(name, math.log(layer_clips.get(name, args.dp_clip)))
                         log_clip[name] += args.dp_adapt_gain * (args.dp_target_mean_scale - scale_ema[name])
                         log_clip[name] = min(max(log_clip[name], math.log(clip_min[name])), math.log(args.dp_clip_max))
