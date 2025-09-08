@@ -21,7 +21,7 @@ from utils import *
 from opacus import PrivacyEngine
 from opacus.grad_sample import GradSampleModule
 import dp_utils
-from dp_utils import remove_dp_hooks, scale_noise_to_clip
+from dp_utils import remove_dp_hooks
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -977,7 +977,10 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
         noise_mult = args.dp_noise
         if noise_multipliers is not None:
             noise_mult = noise_multipliers.get(key, args.dp_noise)
-        noise_std = noise_mult * layer_clips.get(key, args.dp_clip) / num_clients
+        if args.dp_constant_noise:
+            noise_std = noise_mult / num_clients
+        else:
+            noise_std = noise_mult * layer_clips.get(key, args.dp_clip) / num_clients
         noise = torch.randn_like(avg_update) * noise_std
         update = avg_update + noise
         updates[key] = update
@@ -1164,12 +1167,6 @@ if __name__ == '__main__':
         assert sigma >= 0.01, 'Noise multiplier below accountant resolution'
     scale_ema.clear()
     scale_ema.update({name: args.dp_target_mean_scale for name in global_model.state_dict()})
-    total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
-    if total > 0:
-        rescale = args.dp_clip / total
-        for k in layer_clips:
-            old_clip = layer_clips[k]
-            layer_clips[k] = old_clip * rescale
     n_comm_rounds = args.comm_round
     if args.load_model_file and args.alg != 'plot_visual':
         global_model.load_state_dict(torch.load(args.load_model_file))
@@ -1248,7 +1245,10 @@ if __name__ == '__main__':
             elif args.dp_mode == 'server':
                 dp_steps += 1
             if args.dp_mode != 'off':
-                noise_for_eps = args.dp_noise
+                if args.dp_constant_noise and noise_multipliers:
+                    noise_for_eps = min(noise_multipliers.values())
+                else:
+                    noise_for_eps = args.dp_noise
                 epsilon = dp_utils.compute_epsilon(
                     dp_steps,
                     noise_for_eps,
@@ -1270,11 +1270,6 @@ if __name__ == '__main__':
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
                     for name, norm_l in layer_norms.items():
                         layer_clips[name] = max(args.dp_target_mean_scale * norm_l, args.dp_clip_min)
-                    total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
-                    if total > 0:
-                        rescale = args.dp_clip / total
-                        for k in layer_clips:
-                            layer_clips[k] *= rescale
                     args.bootstrap_done = True
                 target = args.dp_target_mean_scale
                 if (round + 1) % args.dp_adapt_period == 0:
@@ -1294,24 +1289,8 @@ if __name__ == '__main__':
                         new_clip = math.exp(log_clip)
                         if new_clip != old_clip:
                             layer_clips[name] = new_clip
-                            if name in noise_multipliers:
-                                noise_multipliers[name] = scale_noise_to_clip(
-                                    noise_multipliers[name], old_clip, new_clip
-                                )
                             updated.append((name, old_clip, new_clip, s_inst, s_ema))
                     if updated:
-                        total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
-                        if total > 0:
-                            rescale = args.dp_clip / total
-                            for k in layer_clips:
-                                old_clip = layer_clips[k]
-                                new_clip = old_clip * rescale
-                                if new_clip != old_clip:
-                                    layer_clips[k] = new_clip
-                                    if k in noise_multipliers:
-                                        noise_multipliers[k] = scale_noise_to_clip(
-                                            noise_multipliers[k], old_clip, new_clip
-                                        )
                         logging.info('Layer-wise mean-scale control:')
                         for name, old_clip, new_clip, s_inst, s_ema in updated:
                             logging.info('%s — s*: %.3f, s̄: %.3f (EMA %.3f), clip: %.2f → %.2f',
