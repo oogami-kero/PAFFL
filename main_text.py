@@ -907,16 +907,23 @@ def aggregate_deltas(
     layer_clips,
     noise_multipliers: dict[str, float] | None = None,
     reset_bn: bool = False,
+    pre_clip_only: bool = False,
 ):
-    """Aggregate client deltas with per-parameter clipping and noise.
+    """Aggregate client deltas with per-parameter clipping.
+
+    When ``pre_clip_only`` is ``True``, return the clipped mean update and norm
+    statistics without adding noise or applying the update to ``global_w``. This
+    enables a bootstrap phase to determine clipping thresholds. When ``pre_clip_only``
+    is ``False``, noise is added and the update is applied to ``global_w``.
 
     The server step is capped using the norm of the pre-noise averaged update.
 
     Returns
     -------
     tuple
-        mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms
+        avg_updates, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms
     """
+
     def _is_bn_or_bias(name: str, tensor: torch.Tensor) -> bool:
         return '.bn' in name or name.endswith('.bias') or tensor.dim() == 1
 
@@ -990,6 +997,8 @@ def aggregate_deltas(
         float(np.max(scales)) if scales else 1.0,
     )
     logging.info('Block median scales: %s', ' '.join(f'{k}:{v:.3f}' for k, v in block_medians.items()))
+
+    avg_updates: dict[str, torch.Tensor] = {}
     avg_norm_sq = 0.0
     noise_norm_sq = 0.0
     updates = {}
@@ -997,17 +1006,23 @@ def aggregate_deltas(
         if 'few_classify' in key or 'transform_layer' in key or 'transformer' in key:
             continue
         if any(s in key for s in ('running_mean', 'running_var', 'num_batches_tracked')):
-            global_w[key] += torch.stack([d[key] for d in deltas.values()]).mean(0)
-            if reset_bn:
-                if 'running_var' in key:
-                    global_w[key].fill_(1.0)
-                else:
-                    global_w[key].zero_()
+            stacked = torch.stack([d[key] for d in deltas.values()])
+            avg = stacked.mean(0)
+            avg_updates[key] = avg
+            if not pre_clip_only:
+                global_w[key] += avg
+                if reset_bn:
+                    if 'running_var' in key:
+                        global_w[key].fill_(1.0)
+                    else:
+                        global_w[key].zero_()
             continue
         stacked = torch.stack([d[key] for d in clipped])
         avg_update = stacked.mean(dim=0)
-        if _is_bn_or_bias(key, global_w[key]):
-            updates[key] = avg_update
+        avg_updates[key] = avg_update
+        if pre_clip_only or _is_bn_or_bias(key, global_w[key]):
+            if not pre_clip_only and _is_bn_or_bias(key, global_w[key]):
+                updates[key] = avg_update
             continue
         noise_mult = args.dp_noise
         if noise_multipliers is not None:
@@ -1021,6 +1036,10 @@ def aggregate_deltas(
         updates[key] = update
         avg_norm_sq += avg_update.pow(2).sum().item()
         noise_norm_sq += noise.pow(2).sum().item()
+
+    if pre_clip_only:
+        return avg_updates, mean_norm, median_norm, mean_scale, 0.0, layer_mean_scales, layer_mean_norms
+
     avg_norm = avg_norm_sq ** 0.5
     noise_norm = noise_norm_sq ** 0.5
 
@@ -1069,7 +1088,7 @@ def aggregate_deltas(
     )
     for key, tensor in step.items():
         global_w[key] += tensor
-    return mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms
+    return avg_updates, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms
 
 
 if __name__ == '__main__':
@@ -1313,7 +1332,34 @@ if __name__ == '__main__':
                 )
             eta_eff = args.server_lr
             if args.dp_mode == 'server':
-                mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms = aggregate_deltas(
+                if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
+                    _, _, _, _, _, layer_mean_scales, layer_mean_norms = aggregate_deltas(
+                        global_w,
+                        deltas,
+                        client_norms,
+                        client_scales,
+                        args,
+                        layer_clips,
+                        noise_multipliers,
+                        pre_clip_only=True,
+                    )
+                    logging.info('Bootstrapping layer clips from first-round statistics')
+                    for name, norm in layer_mean_norms.items():
+                        if '.bn' in name or name.endswith('.bias'):
+                            continue
+                        norm_ema[name] = norm
+                        clip_min[name] = max(1e-4, args.dp_k_min * norm_ema[name])
+                    for name, s in layer_mean_scales.items():
+                        if '.bn' in name or name.endswith('.bias'):
+                            continue
+                        scale_ema[name] = s
+                    for name in norm_ema:
+                        layer_clips[name] = float(
+                            np.clip(args.dp_init_scale * norm_ema[name], clip_min[name], args.dp_clip_max)
+                        )
+                        log_clip[name] = math.log(layer_clips[name])
+                    args.bootstrap_done = True
+                _, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms = aggregate_deltas(
                     global_w, deltas, client_norms, client_scales, args, layer_clips, noise_multipliers
                 )
                 logging.info('Aggregate mean scale (incl client): %.4f', mean_scale)
@@ -1328,13 +1374,6 @@ if __name__ == '__main__':
                     if '.bn' in name or name.endswith('.bias'):
                         continue
                     scale_ema[name] = decay * scale_ema.get(name, s) + (1 - decay) * s
-                if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
-                    for name in norm_ema:
-                        layer_clips[name] = float(
-                            np.clip(args.dp_init_scale * norm_ema[name], clip_min[name], args.dp_clip_max)
-                        )
-                        log_clip[name] = math.log(layer_clips[name])
-                    args.bootstrap_done = True
                 if (round + 1) % args.dp_adapt_period == 0:
                     for name in layer_mean_scales:
                         if '.bn' in name or name.endswith('.bias'):
