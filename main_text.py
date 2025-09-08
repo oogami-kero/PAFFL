@@ -688,18 +688,24 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     
                 if use_logistic:
                     with torch.no_grad():
-                        X_out_all, x_all, out_all = gmodel(
+                        gmodel.eval()
+                        X_out_all, _, _ = gmodel(
                             torch.cat([X_total_sup, X_total_query], 0),
                             use_amp=use_amp,
                             amp_dtype=amp_dtype,
                         )
-                        X_out_sup = X_out_all[:N * K]
-                        X_out_query = X_out_all[N * K:]
-                    pre_logits = out_all[N * K:]
-                    pre_acc = (torch.argmax(pre_logits, -1) == query_labels).float().mean().item()
-
-                    support_features = torch.nan_to_num(l2_normalize(X_out_sup), nan=0.0, posinf=0.0, neginf=0.0).float()
-                    query_features = torch.nan_to_num(l2_normalize(X_out_query), nan=0.0, posinf=0.0, neginf=0.0).float()
+                        X_out_sup = X_out_all[:N * K].clone()
+                        X_out_query = X_out_all[N * K:].clone()
+                        support_features = torch.nan_to_num(F.normalize(X_out_sup, dim=-1), nan=0.0, posinf=0.0, neginf=0.0)
+                        query_features = torch.nan_to_num(F.normalize(X_out_query, dim=-1), nan=0.0, posinf=0.0, neginf=0.0)
+                        protos = []
+                        for c in range(N):
+                            protos.append(support_features[support_labels == c].mean(0))
+                        protos = F.normalize(torch.stack(protos, dim=0), dim=-1)
+                        logits_q = query_features @ protos.t()
+                        pre_acc = (logits_q.argmax(-1) == query_labels).float().mean().item()
+                        support_features = support_features.float()
+                        query_features = query_features.float()
 
                     clf = LogisticRegression(support_features.size(1), N).to(support_features.device).float()
                     with torch.autocast('cuda', enabled=False):
