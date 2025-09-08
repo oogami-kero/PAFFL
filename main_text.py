@@ -795,6 +795,8 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     indices_all_clients = []
     epsilon = None
     deltas = {}
+    client_norms = {}
+    client_scales = {}
     if args.dp_mode == 'server' and not hasattr(args, 'client_grad_norms'):
         args.client_grad_norms = {}
     grad_ma_decay = 0.9
@@ -825,7 +827,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                     for k in new_params
                     if 'few_classify' not in k and 'transform_layer' not in k
                 }
-                deltas[net_id] = delta
                 flat = torch.cat([
                     v.view(-1)
                     for k, v in delta.items()
@@ -841,8 +842,13 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                     )
                 ])
                 norm = torch.norm(flat).item()
+                scale = min(1.0, args.dp_clip / (norm + 1e-12))
+                logging.info('Client %s norm %.4f scale %.4f', net_id, norm, scale)
                 prev = args.client_grad_norms.get(net_id, norm)
                 args.client_grad_norms[net_id] = grad_ma_decay * prev + (1 - grad_ma_decay) * norm
+                deltas[net_id] = {k: v * scale for k, v in delta.items()}
+                client_norms[net_id] = norm
+                client_scales[net_id] = scale
         else:
             net.train()
             result, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
@@ -882,13 +888,15 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
         logger.info('std acc %f' % np.std(acc_list))
 
     if args.dp_mode == 'server':
-        return deltas, epsilon, avg_loss
+        return deltas, client_norms, client_scales, epsilon, avg_loss
     return nets, epsilon, avg_loss
 
 
 def aggregate_deltas(
     global_w,
     deltas,
+    client_norms,
+    client_scales,
     args,
     layer_clips,
     noise_multipliers: dict[str, float] | None = None,
@@ -904,10 +912,13 @@ def aggregate_deltas(
     clipped = []
     scales = []
     norms = []
+    total_norm = 0.0
+    total_clipped = 0.0
     layer_scales: dict[str, list[float]] = {}
     layer_norms: dict[str, list[float]] = {}
-    for delta in deltas.values():
+    for cid, delta in deltas.items():
         client = {}
+        c_scale = client_scales.get(cid, 1.0)
         for name, tensor in delta.items():
             if any(
                 s in name
@@ -922,18 +933,23 @@ def aggregate_deltas(
             ):
                 continue
             clip = layer_clips.get(name, args.dp_clip)
-            norm = torch.norm(tensor).item()
-            scale = min(1.0, clip / (norm + 1e-12))
-            client[name] = tensor * scale
-            scales.append(scale)
+            scaled_norm = torch.norm(tensor).item()
+            norm = scaled_norm / max(c_scale, 1e-12)
+            p_scale = min(1.0, clip / (norm + 1e-12))
+            combo_scale = c_scale * p_scale
+            client[name] = tensor * p_scale
+            scales.append(combo_scale)
             norms.append(norm)
-            layer_scales.setdefault(name, []).append(scale)
+            total_norm += norm
+            total_clipped += norm * combo_scale
+            layer_scales.setdefault(name, []).append(combo_scale)
             layer_norms.setdefault(name, []).append(norm)
         clipped.append(client)
     num_clients = len(clipped) or 1
     mean_norm = float(np.mean(norms)) if norms else 0.0
     median_norm = float(np.median(norms)) if norms else 0.0
-    mean_scale = float(np.mean(scales)) if scales else 1.0
+    unweighted_mean_scale = float(np.mean(scales)) if scales else 1.0
+    mean_scale = float(total_clipped / (total_norm + 1e-12))
     layer_mean_scales = {k: float(np.mean(v)) for k, v in layer_scales.items()}
     layer_mean_norms = {k: float(np.mean(v)) for k, v in layer_norms.items()}
 
@@ -953,7 +969,12 @@ def aggregate_deltas(
     block_medians = {k: float(np.median(v)) if v else 0.0 for k, v in block_scales.items()}
 
     logging.info('Norm stats - mean: %.4f median: %.4f', mean_norm, median_norm)
-    logging.info('Scale stats - mean: %.4f max: %.4f', mean_scale, float(np.max(scales)) if scales else 1.0)
+    logging.info(
+        'Scale stats - mean(w): %.4f mean(u): %.4f max: %.4f',
+        mean_scale,
+        unweighted_mean_scale,
+        float(np.max(scales)) if scales else 1.0,
+    )
     logging.info('Block median scales: %s', ' '.join(f'{k}:{v:.3f}' for k, v in block_medians.items()))
     avg_norm_sq = 0.0
     noise_norm_sq = 0.0
@@ -1245,7 +1266,7 @@ if __name__ == '__main__':
                         '>> Global 5 Model pre/post Test accuracy: {:.4f}/{:.4f} Best Acc: {:.4f} '.format(global_pre, global_post, best_acc_5)
                     )
             if args.dp_mode == 'server':
-                deltas, _, round_loss = local_train_net_few_shot(
+                deltas, client_norms, client_scales, _, round_loss = local_train_net_few_shot(
                     nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
             else:
@@ -1274,8 +1295,10 @@ if __name__ == '__main__':
             eta_eff = args.server_lr
             if args.dp_mode == 'server':
                 mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms = aggregate_deltas(
-                    global_w, deltas, args, layer_clips, noise_multipliers
+                    global_w, deltas, client_norms, client_scales, args, layer_clips, noise_multipliers
                 )
+                logging.info('Aggregate mean scale (incl client): %.4f', mean_scale)
+                logging.info('Client mean scale: %.4f', float(np.mean(list(client_scales.values()))))
                 decay = 0.9
                 for name, norm in layer_mean_norms.items():
                     norm_ema[name] = decay * norm_ema.get(name, norm) + (1 - decay) * norm
