@@ -925,7 +925,10 @@ def aggregate_deltas(
         noise_mult = args.dp_noise
         if noise_multipliers is not None:
             noise_mult = noise_multipliers.get(key, args.dp_noise)
-        noise_std = noise_mult * layer_clips.get(key, args.dp_clip) / num_clients
+        if args.dp_constant_noise:
+            noise_std = noise_mult / num_clients
+        else:
+            noise_std = noise_mult * layer_clips.get(key, args.dp_clip) / num_clients
         noise = torch.randn_like(avg_update) * noise_std
         update = avg_update + noise
         updates[key] = update
@@ -1110,12 +1113,6 @@ if __name__ == '__main__':
         assert sigma >= 0.01, 'Noise multiplier below accountant resolution'
     scale_ema.clear()
     scale_ema.update({name: args.dp_target_mean_scale for name in global_model.state_dict()})
-    total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
-    if total > 0:
-        rescale = args.dp_clip / total
-        for k in layer_clips:
-            old_clip = layer_clips[k]
-            layer_clips[k] = old_clip * rescale
     n_comm_rounds = args.comm_round
     if args.load_model_file and args.alg != 'plot_visual':
         global_model.load_state_dict(torch.load(args.load_model_file))
@@ -1194,7 +1191,10 @@ if __name__ == '__main__':
             elif args.dp_mode == 'server':
                 dp_steps += 1
             if args.dp_mode != 'off':
-                noise_for_eps = args.dp_noise
+                if args.dp_constant_noise and noise_multipliers:
+                    noise_for_eps = min(noise_multipliers.values())
+                else:
+                    noise_for_eps = args.dp_noise
                 epsilon = dp_utils.compute_epsilon(
                     dp_steps,
                     noise_for_eps,
@@ -1216,12 +1216,6 @@ if __name__ == '__main__':
                     for k in layer_clips:
                         layer_clips[k] = args.dp_clip
                     args.bootstrap_done = True
-                    total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
-                    if total > 0:
-                        rescale = args.dp_clip / total
-                        for k in layer_clips:
-                            old = layer_clips[k]
-                            layer_clips[k] = old * rescale
                 target = args.dp_target_mean_scale
                 if (round + 1) % args.dp_adapt_period == 0:
                     updated = []
@@ -1242,14 +1236,6 @@ if __name__ == '__main__':
                             layer_clips[name] = new_clip
                             updated.append((name, old_clip, new_clip, s_inst, s_ema))
                     if updated:
-                        total = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
-                        if total > 0:
-                            rescale = args.dp_clip / total
-                            for k in layer_clips:
-                                old_clip = layer_clips[k]
-                                new_clip = old_clip * rescale
-                                if new_clip != old_clip:
-                                    layer_clips[k] = new_clip
                         logging.info('Layer-wise mean-scale control:')
                         for name, old_clip, new_clip, s_inst, s_ema in updated:
                             logging.info('%s — s*: %.3f, s̄: %.3f (EMA %.3f), clip: %.2f → %.2f',
