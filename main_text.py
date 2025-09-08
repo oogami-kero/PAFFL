@@ -908,7 +908,6 @@ def aggregate_deltas(
     logging.info('Scale stats - mean: %.4f max: %.4f', mean_scale, float(np.max(scales)) if scales else 1.0)
     avg_norm_sq = 0.0
     noise_norm_sq = 0.0
-    step_norm_sq = 0.0
     updates = {}
     for key in global_w:
         if 'few_classify' in key or 'transform_layer' in key:
@@ -932,28 +931,52 @@ def aggregate_deltas(
         updates[key] = update
         avg_norm_sq += avg_update.pow(2).sum().item()
         noise_norm_sq += noise.pow(2).sum().item()
-        step_norm_sq += update.pow(2).sum().item()
     avg_norm = avg_norm_sq ** 0.5
     noise_norm = noise_norm_sq ** 0.5
-    unscaled_step_norm = step_norm_sq ** 0.5
-    logging.info('||avg||=%.4f ||noise||=%.4f ||u||=%.4f', avg_norm, noise_norm, unscaled_step_norm)
-    eta_cap = args.target_step / max(avg_norm, 1e-12)
+
+    u: dict[str, torch.Tensor] = {}
+    u_norm_sq = 0.0
+    if args.server_momentum != 0:
+        global moment_v  # type: ignore[var-annotated]
+        for key, update in updates.items():
+            moment_v[key] = args.server_momentum * moment_v[key] + (1 - args.server_momentum) * update
+            u[key] = moment_v[key]
+            u_norm_sq += moment_v[key].pow(2).sum().item()
+    else:
+        u = updates
+        for update in u.values():
+            u_norm_sq += update.pow(2).sum().item()
+    u_norm = u_norm_sq ** 0.5
+    logging.info('||avg||=%.4f ||noise||=%.4f ||u||=%.4f', avg_norm, noise_norm, u_norm)
+
+    eta_cap = args.target_step / max(u_norm, 1e-12)
     eta_eff = min(args.server_lr, eta_cap)
-    step_norm = eta_eff * unscaled_step_norm
+
+    step: dict[str, torch.Tensor] = {}
+    for key, tensor in u.items():
+        step[key] = eta_eff * tensor
+    step_norm_sq = sum(t.pow(2).sum().item() for t in step.values())
+    uncapped_step_norm = step_norm_sq ** 0.5
+    if uncapped_step_norm > args.target_step:
+        scale = args.target_step / uncapped_step_norm
+        for key in step:
+            step[key] *= scale
+        step_norm = args.target_step
+    else:
+        step_norm = uncapped_step_norm
+
     logging.info(
-        'server_lr(base)=%.4g eta_eff=%.4g (cap=%s) ||step||=%.4f ratio(step/avg)=%.3f ||u||=%.4f',
+        'server_lr(base)=%.4g eta_eff=%.4g (cap=%s) ||step||=%.4f (uncapped %.4f) ratio(step/avg)=%.3f ||u||=%.4f',
         args.server_lr,
         eta_eff,
         'ON' if eta_eff < args.server_lr else 'off',
         step_norm,
+        uncapped_step_norm,
         step_norm / max(avg_norm, 1e-12),
-        unscaled_step_norm,
+        u_norm,
     )
-    for key, update in updates.items():
-        if args.server_momentum == 0:
-            global_w[key] += eta_eff * update
-        else:
-            global_w[key] += update
+    for key, tensor in step.items():
+        global_w[key] += tensor
     return mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales
 
 
@@ -1116,7 +1139,7 @@ if __name__ == '__main__':
 
 
             global_w = global_model.state_dict()
-            if args.server_momentum:
+            if args.server_momentum and args.dp_mode != 'server':
                 old_w = copy.deepcopy(global_model.state_dict())
 
             nets_this_round = {k: nets[k] for k in party_list_this_round}
@@ -1249,7 +1272,7 @@ if __name__ == '__main__':
                                 continue
                             global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
-            if args.server_momentum:
+            if args.server_momentum and args.dp_mode != 'server':
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:
                     delta_w[key] = global_w[key] - old_w[key]
