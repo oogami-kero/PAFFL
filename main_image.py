@@ -29,7 +29,9 @@ warnings.filterwarnings('ignore')
 
 layer_clips: dict[str, float] = {}
 scale_ema: dict[str, float] = {}
-layer_norms: dict[str, float] = {}
+norm_ema: dict[str, float] = {}
+clip_min: dict[str, float] = {}
+log_clip: dict[str, float] = {}
 noise_multipliers: dict[str, float] = {}
 
 from collections import defaultdict
@@ -207,8 +209,9 @@ def get_args():
     parser.add_argument('--use_transform_layer', type=int, default=0,
                         help='enable personalized transformation layer')
     parser.add_argument('--dp_clip', type=float, default=1.0, help='DP-SGD clipping norm')
-    parser.add_argument('--dp_clip_min', type=float, default=1.0, help='minimum DP-SGD clipping norm')
-    parser.add_argument('--dp_clip_max', type=float, default=20.0, help='maximum DP-SGD clipping norm')
+    parser.add_argument('--dp_k_min', type=float, default=0.2, help='minimum clip multiplier relative to norm EMA')
+    parser.add_argument('--dp_init_scale', type=float, default=0.6, help='initial clip scaling')
+    parser.add_argument('--dp_clip_max', type=float, default=0.8, help='maximum DP-SGD clipping norm')
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--dp_noise', type=float, default=None, help='DP-SGD noise multiplier')
     group.add_argument('--dp_noise_scale', type=float, default=None, help='scale for DP noise as sigma = scale * clip')
@@ -245,7 +248,7 @@ def get_args():
         args.dp_noise_init = args.dp_noise
     elif args.dp_noise is None:
         args.dp_noise = 0.0
-    args.dp_clip = min(max(args.dp_clip, args.dp_clip_min), args.dp_clip_max)
+    args.dp_clip = min(max(args.dp_clip, 1e-4), args.dp_clip_max)
     args.log_dp_clip = math.log(max(1.0, args.dp_clip))
     return args
 
@@ -1323,40 +1326,26 @@ if __name__ == '__main__':
                     global_w, deltas, args, layer_clips, noise_multipliers
                 )
                 logging.info('Aggregate mean scale: %.4f', mean_scale)
-                if not layer_norms:
-                    layer_norms.update(layer_mean_norms)
                 decay = 0.9
+                for name, norm in layer_mean_norms.items():
+                    norm_ema[name] = decay * norm_ema.get(name, norm) + (1 - decay) * norm
+                    clip_min[name] = max(1e-4, args.dp_k_min * norm_ema[name])
                 for name, s in layer_mean_scales.items():
                     scale_ema[name] = decay * scale_ema.get(name, s) + (1 - decay) * s
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
-                    for name, norm_l in layer_norms.items():
-                        layer_clips[name] = max(args.dp_target_mean_scale * norm_l, args.dp_clip_min)
+                    for name in norm_ema:
+                        layer_clips[name] = float(np.clip(args.dp_init_scale * norm_ema[name], clip_min[name], args.dp_clip_max))
+                        log_clip[name] = math.log(layer_clips[name])
                     args.bootstrap_done = True
-                target = args.dp_target_mean_scale
                 if (round + 1) % args.dp_adapt_period == 0:
-                    updated = []
-                    for name, s_inst in layer_mean_scales.items():
-                        s_ema = scale_ema.get(name, s_inst)
-                        if abs(s_inst - target) < args.dp_deadband:
-                            continue
-                        e_ema = s_ema - target
-                        e_inst = s_inst - target
-                        e = e_inst if np.sign(e_ema) != np.sign(e_inst) else e_ema
-                        delta = -args.dp_adapt_gain * e
-                        delta = float(np.clip(delta, -math.log(1.2), math.log(1.2)))
-                        old_clip = max(layer_clips[name], args.dp_clip_min)
-                        log_clip = math.log(old_clip)
-                        log_clip = min(max(log_clip + delta, math.log(args.dp_clip_min)), math.log(args.dp_clip_max))
-                        new_clip = math.exp(log_clip)
-                        if new_clip != old_clip:
-                            layer_clips[name] = new_clip
-                            updated.append((name, old_clip, new_clip, s_inst, s_ema))
-                    if updated:
-                        logging.info('Layer-wise mean-scale control:')
-                        for name, old_clip, new_clip, s_inst, s_ema in updated:
-                            logging.info('%s — s*: %.3f, s̄: %.3f (EMA %.3f), clip: %.2f → %.2f',
-                                         name, target, s_inst, s_ema, old_clip, new_clip)
-                        logging.info('Current layer clips: %s', layer_clips)
+                    for name in layer_mean_scales:
+                        log_clip[name] = log_clip.get(name, math.log(layer_clips.get(name, args.dp_clip)))
+                        log_clip[name] += args.dp_adapt_gain * (args.dp_target_mean_scale - scale_ema[name])
+                        log_clip[name] = min(max(log_clip[name], math.log(clip_min[name])), math.log(args.dp_clip_max))
+                        layer_clips[name] = math.exp(log_clip[name])
+                logging.info('clip_min: %s', clip_min)
+                logging.info('layer_clips: %s', layer_clips)
+                logging.info('layer_mean_scales: %s', layer_mean_scales)
             else:
                 total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
                 fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
