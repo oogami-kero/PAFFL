@@ -852,7 +852,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                     for k in new_params
                     if 'few_classify' not in k and 'transform_layer' not in k
                 }
-                deltas[net_id] = delta
                 flat = torch.cat([
                     v.view(-1)
                     for k, v in delta.items()
@@ -872,6 +871,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 logging.info('Client %s norm %.4f scale %.4f', net_id, norm, scale)
                 prev = args.client_grad_norms.get(net_id, norm)
                 args.client_grad_norms[net_id] = grad_ma_decay * prev + (1 - grad_ma_decay) * norm
+                deltas[net_id] = {k: v * scale for k, v in delta.items()}
         else:
             net.train()
             result, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
