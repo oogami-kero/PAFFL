@@ -691,6 +691,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         )
                         X_out_sup = X_out_all[:N * K]
                         X_out_query = X_out_all[N * K:]
+                    pre_logits = out_all[N * K:]
+                    pre_acc = (torch.argmax(pre_logits, -1) == query_labels).float().mean().item()
 
                     support_features = torch.nan_to_num(l2_normalize(X_out_sup), nan=0.0, posinf=0.0, neginf=0.0).float()
                     query_features = torch.nan_to_num(l2_normalize(X_out_query), nan=0.0, posinf=0.0, neginf=0.0).float()
@@ -705,21 +707,22 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     max_value, index = torch.max(out, -1)
 
                     if test_only:
-                        return acc_train, max_value, index
+                        return acc_train, pre_acc, max_value, index
                     else:
                         return acc_train
-    
+
                 else:
-    
-                    acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
+
+                    pre_acc = (torch.argmax(out, -1) == query_labels).float().mean().item()
+                    acc_train = pre_acc
                     with torch.no_grad():
-                        max_value, index=torch.max(out,-1)
+                        max_value, index = torch.max(out, -1)
     
     
     
-                    del net_new, X_out_sup, X_out_query, out,net_para, param_require_grad, grad, X_total_query, X_total_sup
+                    del net_new, X_out_sup, X_out_query, out, net_para, param_require_grad, grad, X_total_query, X_total_sup
                     if test_only:
-                        return acc_train, max_value, index
+                        return acc_train, pre_acc, max_value, index
                     else:
                         return acc_train
         
@@ -776,6 +779,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
     avg_acc = 0.0
     acc_list = []
+    pre_acc_list = []
     max_value_all_clients = []
     indices_all_clients = []
     epsilon = None
@@ -832,30 +836,34 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
             net.train()
             result, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device=device, test_only=True, test_only_k=test_only_k)
-            testacc, max_values, indices = result
+            testacc, preacc, max_values, indices = result
             max_value_all_clients.append(max_values)
             indices_all_clients.append(indices)
 
             acc_list.append(testacc)
+            pre_acc_list.append(preacc)
 
-            logger.info(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
-            print(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
+            logger.info('pre-adapt {:.4f} | post-adapt {:.4f}'.format(preacc, testacc))
+            print('pre-adapt {:.4f} | post-adapt {:.4f}'.format(preacc, testacc))
 
             max_value_all_clients = torch.stack(max_value_all_clients, 0)
             indices_all_clients = torch.stack(indices_all_clients, 0)
-            return acc_list, max_value_all_clients, indices_all_clients, epsilon
+            return acc_list, pre_acc_list, max_value_all_clients, indices_all_clients, epsilon
 
         avg_acc += testacc
         acc_list.append(testacc)
 
     logger.info(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
     print(' | '.join(['{:.4f}'.format(acc) for acc in acc_list]))
+    if pre_acc_list:
+        logger.info('pre: ' + ' | '.join(['{:.4f}'.format(acc) for acc in pre_acc_list]))
+        print('pre: ' + ' | '.join(['{:.4f}'.format(acc) for acc in pre_acc_list]))
     avg_loss = float(np.mean(losses)) if losses else 0.0
 
     if test_only:
         max_value_all_clients = torch.stack(max_value_all_clients, 0)
         indices_all_clients = torch.stack(indices_all_clients, 0)
-        return acc_list, max_value_all_clients, indices_all_clients, epsilon
+        return acc_list, pre_acc_list, max_value_all_clients, indices_all_clients, epsilon
 
     avg_acc /= args.n_parties
     if args.alg == 'local_training':
@@ -1200,22 +1208,26 @@ if __name__ == '__main__':
                     net.load_state_dict(net_para)
 
             for k in [1,5]:
-                global_acc, max_value_all_clients, indices_all_clients, _ = local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, test_only=True, test_only_k=k)
-                global_acc = max(global_acc)
+                post_accs, pre_accs, max_value_all_clients, indices_all_clients, _ = local_train_net_few_shot(
+                    nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, test_only=True, test_only_k=k
+                )
+                global_post = max(post_accs)
+                global_pre = max(pre_accs)
                 if k == 1:
-                    if global_acc > best_acc + args.convergence_delta:
-                        best_acc = global_acc
+                    if global_post > best_acc + args.convergence_delta:
+                        best_acc = global_post
                         no_improve = 0
                     else:
                         no_improve += 1
-                    print('>> Global 1 Model Test accuracy: {:.4f} Best Acc: {:.4f}'.format(global_acc, best_acc))
-                    logger.info('>> Global 1 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc))
-                elif k==5:
-                    if global_acc > best_acc_5:
-                        best_acc_5 = global_acc
-                    print('>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f}'.format(global_acc, best_acc_5))
+                    print('>> Global 1 Model pre/post Test accuracy: {:.4f}/{:.4f} Best Acc: {:.4f}'.format(global_pre, global_post, best_acc))
+                    logger.info('>> Global 1 Model pre/post Test accuracy: {:.4f}/{:.4f} Best Acc: {:.4f} '.format(global_pre, global_post, best_acc))
+                elif k == 5:
+                    if global_post > best_acc_5:
+                        best_acc_5 = global_post
+                    print('>> Global 5 Model pre/post Test accuracy: {:.4f}/{:.4f} Best Acc: {:.4f}'.format(global_pre, global_post, best_acc_5))
                     logger.info(
-                        '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
+                        '>> Global 5 Model pre/post Test accuracy: {:.4f}/{:.4f} Best Acc: {:.4f} '.format(global_pre, global_post, best_acc_5)
+                    )
             if args.dp_mode == 'server':
                 deltas, _, round_loss = local_train_net_few_shot(
                     nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device

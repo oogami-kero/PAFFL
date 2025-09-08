@@ -33,6 +33,16 @@ python main_text.py --dataset dataset_name
 Note that the text model requires the GloVe embedding file named 'glove.42B.300d.zip', which should be put in the main folder. The download link is [here](https://huggingface.co/stanfordnlp/glove/resolve/main/glove.42B.300d.zip).
 
 
+## Metrics
+
+The training scripts log both **pre-adaptation** and **post-adaptation** accuracies for each evaluation task:
+
+* *Pre-adaptation* accuracy is computed by applying the global classifier to the query samples before any task-specific fine tuning.
+* *Post-adaptation* accuracy is measured after fitting a task-specific classifier on the support set (logistic regression by default) and evaluating on the query set.
+
+During training, the "global" accuracy reported for each round is the maximum post-adaptation accuracy across clients. Tracking the pre-adaptation metric alongside the post-adaptation one helps diagnose cases where the global accuracy appears stagnant even though the base model continues to improve.
+
+
 ## New Features
 
 The repository now includes optional support for a **personalised transformation layer** and **differential privacy** with a privacy accountant.
