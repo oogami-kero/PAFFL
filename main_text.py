@@ -889,7 +889,17 @@ def aggregate_deltas(
     for delta in deltas.values():
         client = {}
         for name, tensor in delta.items():
-            if any(s in name for s in ('running_mean', 'running_var', 'num_batches_tracked', 'few_classify', 'transform_layer')):
+            if any(
+                s in name
+                for s in (
+                    'running_mean',
+                    'running_var',
+                    'num_batches_tracked',
+                    'few_classify',
+                    'transform_layer',
+                    'transformer',
+                )
+            ):
                 continue
             clip = layer_clips.get(name, args.dp_clip)
             norm = torch.norm(tensor).item()
@@ -927,7 +937,7 @@ def aggregate_deltas(
     noise_norm_sq = 0.0
     updates = {}
     for key in global_w:
-        if 'few_classify' in key or 'transform_layer' in key:
+        if 'few_classify' in key or 'transform_layer' in key or 'transformer' in key:
             continue
         if any(s in key for s in ('running_mean', 'running_var', 'num_batches_tracked')):
             global_w[key] += torch.stack([d[key] for d in deltas.values()]).mean(0)
@@ -1120,25 +1130,39 @@ if __name__ == '__main__':
     global_models, global_model_meta_data, global_layer_type = init_nets(args.net_config, 1, args, device='gpu')
     global_model = global_models[0]
     layer_clips.clear()
-    layer_clips.update({name: args.dp_clip for name in global_model.state_dict()})
+    layer_clips.update({
+        name: args.dp_clip
+        for name in global_model.state_dict()
+        if 'transformer' not in name
+    })
     noise_multipliers.clear()
-    noise_multipliers.update({name: args.dp_noise for name in global_model.state_dict()})
+    noise_multipliers.update({
+        name: args.dp_noise
+        for name in global_model.state_dict()
+        if 'transformer' not in name
+    })
     for name in noise_multipliers:
         if name.endswith('bias'):
             noise_multipliers[name] *= 0.5
     for sigma in noise_multipliers.values():
         assert sigma >= 0.01, 'Noise multiplier below accountant resolution'
     scale_ema.clear()
-    scale_ema.update({name: args.dp_target_mean_scale for name in global_model.state_dict()})
+    scale_ema.update({
+        name: args.dp_target_mean_scale
+        for name in global_model.state_dict()
+        if 'transformer' not in name
+    })
     n_comm_rounds = args.comm_round
     if args.load_model_file and args.alg != 'plot_visual':
         global_model.load_state_dict(torch.load(args.load_model_file))
         n_comm_rounds -= args.load_model_round
 
     if args.server_momentum:
-        moment_v = copy.deepcopy(global_model.state_dict())
-        for key in moment_v:
-            moment_v[key] = 0
+        moment_v = {
+            k: torch.zeros_like(v)
+            for k, v in global_model.state_dict().items()
+            if 'transformer' not in k
+        }
     if args.alg == 'fedavg':
         use_minus = False
         best_acc = 0
