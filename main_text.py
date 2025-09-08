@@ -910,6 +910,8 @@ def aggregate_deltas(
 ):
     """Aggregate client deltas with per-parameter clipping and noise.
 
+    The server step is capped using the norm of the pre-noise averaged update.
+
     Returns
     -------
     tuple
@@ -1035,9 +1037,11 @@ def aggregate_deltas(
         for update in u.values():
             u_norm_sq += update.pow(2).sum().item()
     u_norm = u_norm_sq ** 0.5
-    logging.info('||avg||=%.4f ||noise||=%.4f ||u||=%.4f', avg_norm, noise_norm, u_norm)
+    avg_norm_pre_noise = avg_norm
+    logging.info('||avg_pre_noise||=%.4f ||noise||=%.4f ||u||=%.4f', avg_norm_pre_noise, noise_norm, u_norm)
 
-    eta_cap = args.target_step / max(u_norm, 1e-12)
+    # Cap step size using the pre-noise averaged update norm
+    eta_cap = args.target_step / max(avg_norm_pre_noise, 1e-12)
     eta_eff = min(args.server_lr, eta_cap)
 
     step: dict[str, torch.Tensor] = {}
@@ -1054,13 +1058,13 @@ def aggregate_deltas(
         step_norm = uncapped_step_norm
 
     logging.info(
-        'server_lr(base)=%.4g eta_eff=%.4g (cap=%s) ||step||=%.4f (uncapped %.4f) ratio(step/avg)=%.3f ||u||=%.4f',
+        'server_lr(base)=%.4g eta_eff=%.4g (cap=%s) ||step||=%.4f (uncapped %.4f) ratio(step/avg_pre_noise)=%.3f ||u||=%.4f',
         args.server_lr,
         eta_eff,
         'ON' if eta_eff < args.server_lr else 'off',
         step_norm,
         uncapped_step_norm,
-        step_norm / max(avg_norm, 1e-12),
+        step_norm / max(avg_norm_pre_noise, 1e-12),
         u_norm,
     )
     for key, tensor in step.items():
