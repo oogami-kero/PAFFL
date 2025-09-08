@@ -198,6 +198,8 @@ def get_args():
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
     parser.add_argument('--server_lr', type=float, default=1.0, help='the server learning rate (FedAvgM)')
     parser.add_argument('--target_step', type=float, default=1.0, help='L2 norm cap for the server update after scaling')
+    parser.add_argument('--step_avg_target', type=float, default=0.0, help='desired step/avg norm ratio (0 to disable)')
+    parser.add_argument('--step_avg_kp', type=float, default=0.1, help='proportional gain for target_step controller')
     parser.add_argument('--convergence_patience', type=int, default=0,
                         help='stop if accuracy does not improve after this many rounds (0 to disable)')
     parser.add_argument('--convergence_delta', type=float, default=0.0,
@@ -1035,8 +1037,12 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
     u_norm = u_norm_sq ** 0.5
     logging.info('||avg||=%.4f ||noise||=%.4f ||u||=%.4f', avg_norm, noise_norm, u_norm)
 
+    desired_ratio = getattr(args, 'step_avg_target', 0.0)
     eta_cap = args.target_step / max(u_norm, 1e-12)
     eta_eff = min(args.server_lr, eta_cap)
+    if desired_ratio > 0:
+        eta_ratio = desired_ratio * avg_norm / max(u_norm, 1e-12)
+        eta_eff = min(args.server_lr, max(eta_eff, eta_ratio))
 
     step: dict[str, torch.Tensor] = {}
     for key, tensor in u.items():
@@ -1051,6 +1057,7 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
     else:
         step_norm = uncapped_step_norm
 
+    step_avg_ratio = step_norm / max(avg_norm, 1e-12)
     logging.info(
         'server_lr(base)=%.4g eta_eff=%.4g (cap=%s) ||step||=%.4f (uncapped %.4f) ratio(step/avg)=%.3f ||u||=%.4f',
         args.server_lr,
@@ -1058,9 +1065,13 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
         'ON' if eta_eff < args.server_lr else 'off',
         step_norm,
         uncapped_step_norm,
-        step_norm / max(avg_norm, 1e-12),
+        step_avg_ratio,
         u_norm,
     )
+    kp = getattr(args, 'step_avg_kp', 0.0)
+    if kp > 0 and desired_ratio > 0:
+        args.target_step *= 1 + kp * (desired_ratio - step_avg_ratio)
+        args.target_step = max(1e-12, args.target_step)
     for key, tensor in step.items():
         global_w[key] += tensor
 
