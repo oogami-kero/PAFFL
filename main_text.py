@@ -1181,6 +1181,7 @@ if __name__ == '__main__':
     if args.alg == 'fedavg':
         use_minus = False
         best_acc = 0
+        global_acc = 0
         best_confident_acc = 0
         best_acc_5 = 0
         no_improve = 0
@@ -1221,6 +1222,7 @@ if __name__ == '__main__':
                 global_post = max(post_accs)
                 global_pre = max(pre_accs)
                 if k == 1:
+                    global_acc = global_post
                     if global_post > best_acc + args.convergence_delta:
                         best_acc = global_post
                         no_improve = 0
@@ -1343,7 +1345,7 @@ if __name__ == '__main__':
 
             mkdirs(args.modeldir+'fedavg/')
 
-            if global_acc > best_acc:
+            if global_acc >= best_acc:
                 torch.save(global_model.state_dict(), args.modeldir+'fedavg/'+'globalmodel'+args.log_file_name+'.pth')
                 torch.save(nets[0].state_dict(), args.modeldir+'fedavg/'+'localmodel0'+args.log_file_name+'.pth')
                 torch.save(layer_clips, args.modeldir+'fedavg/'+'layer_clips'+args.log_file_name+'.pth')
