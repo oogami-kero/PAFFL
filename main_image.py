@@ -939,10 +939,18 @@ def aggregate_deltas(global_w, deltas, args, layer_clips, noise_multipliers=None
     mean_scale = float(total_clipped / (total_norm + 1e-12))
     layer_mean_scales = {k: float(np.mean(v)) for k, v in layer_scales.items()}
     layer_mean_norms = {k: float(np.mean(v)) for k, v in layer_norms.items()}
+
+    def _strip_prefix(n: str) -> str:
+        parts = n.split('.')
+        while parts and not parts[0].startswith('layer'):
+            parts = parts[1:]
+        return '.'.join(parts)
+
     block_scales = {f'layer{i}': [] for i in range(1, 5)}
     for name, s in layer_mean_scales.items():
+        norm_name = _strip_prefix(name)
         for block in block_scales:
-            if name.startswith(block):
+            if norm_name.startswith(block):
                 block_scales[block].append(s)
                 break
     block_medians = {k: float(np.median(v)) if v else 0.0 for k, v in block_scales.items()}
