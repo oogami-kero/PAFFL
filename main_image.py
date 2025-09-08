@@ -764,6 +764,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             result = np.mean(accs)
         else:
             accs = []
+            pre_accs = []
             max_values = []
             indices = []
             accs_train = []
@@ -775,12 +776,18 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             #########################################
 
             for epoch_test in range(args.num_test_tasks * args.num_true_test_ratio):
-                acc, max_value, index = train_epoch(epoch_test, mode='test')
+                acc, pre_acc, max_value, index = train_epoch(epoch_test, mode='test')
                 accs.append(acc)
+                pre_accs.append(pre_acc)
                 max_values.append(max_value)
                 indices.append(index)
-                del acc, max_value, index
-            result = (np.mean(accs), torch.cat(max_values, 0), torch.cat(indices, 0))
+                del acc, pre_acc, max_value, index
+            result = (
+                np.mean(accs),
+                np.mean(pre_accs),
+                torch.cat(max_values, 0),
+                torch.cat(indices, 0),
+            )
 
         if args.dp_mode == 'local' and args.grad_norms_ma:
             new_clip = float(np.percentile(list(args.grad_norms_ma.values()), 90))
