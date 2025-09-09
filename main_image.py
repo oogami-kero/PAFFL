@@ -1118,24 +1118,16 @@ def aggregate_deltas(
             total_clients = getattr(args, 'total_clients', getattr(args, 'n_parties', num_participants))
             q = num_participants / total_clients
             if args.dp_constant_noise and noise_multipliers:
-                sigmas = list(noise_multipliers.values())
-                sigma_eq = (len(sigmas) / sum(1 / (s**2) for s in sigmas)) ** 0.5
-                logging.info(
-                    '[acct] sigmas min/median/max: %.4f/%.4f/%.4f, sigma_eq=%.4f',
-                    min(sigmas),
-                    float(np.median(sigmas)),
-                    max(sigmas),
-                    sigma_eq,
-                )
+                sigma_eff = min(noise_multipliers.values())
             else:
-                sigma_eq = args.dp_noise
-            dp_utils.record_dp_event(q, sigma_eq, accountant=args.dp_accountant)
+                sigma_eff = args.dp_noise
+            dp_utils.record_dp_event(q, sigma_eff, accountant=args.dp_accountant)
             logging.info(
-                '[acct] round=%s, q=%d/%d, sigma_eq=%.4f, noise_added=True',
+                '[acct] round=%s, q=%d/%d, sigma_eff=%.4f, noise_added=True',
                 getattr(args, 'current_round', '?'),
                 num_participants,
                 total_clients,
-                sigma_eq,
+                sigma_eff,
             )
 
     avg_norm = avg_norm_sq ** 0.5
