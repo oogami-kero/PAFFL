@@ -607,6 +607,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     gmodel_base = gmodel._module if hasattr(gmodel, '_module') else gmodel
                     net_new = copy.deepcopy(model_template)
                     net_new.load_state_dict(gmodel_base.state_dict())
+                    net_new.eval()
 
                     for j in range(fine_tune_steps):
                         net_new.zero_grad()
