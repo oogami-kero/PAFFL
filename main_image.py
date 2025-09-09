@@ -423,7 +423,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     if tl_params:
         tl_optimizer = optim.SGD(tl_params, lr=lr, momentum=0.9, weight_decay=args.reg)
 
-    use_amp = args.use_amp and args.device != 'cpu'
+    use_amp = args.use_amp and args.device != 'cpu' and args.dp_mode != 'local'
+    if args.use_amp and args.dp_mode == 'local':
+        print('warning: --use_amp ignored when dp_mode="local"')
     amp_dtype = torch.bfloat16 if args.amp_dtype == 'bf16' else torch.float16
 
     if args.dataset == 'FC100':
