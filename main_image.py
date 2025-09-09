@@ -992,11 +992,14 @@ def aggregate_deltas(
     update is applied to ``global_w`` as before.
 
     The server step is capped using the norm of the pre-noise averaged update.
+    The ratio ``r_k`` between the capped and uncapped step norms is also
+    returned to expose any applied scaling.
 
     Returns
     -------
     tuple
-        avg_updates, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms
+        avg_updates, mean_norm, median_norm, mean_scale, eta_eff,
+        layer_mean_scales, layer_mean_norms, r_k
     """
 
     def _is_bn_or_bias(name: str, tensor: torch.Tensor) -> bool:
@@ -1112,7 +1115,7 @@ def aggregate_deltas(
         noise_norm_sq += noise.pow(2).sum().item()
 
     if pre_clip_only:
-        return avg_updates, mean_norm, median_norm, mean_scale, 0.0, layer_mean_scales, layer_mean_norms
+        return avg_updates, mean_norm, median_norm, mean_scale, 0.0, layer_mean_scales, layer_mean_norms, 1.0
 
     avg_norm = avg_norm_sq ** 0.5
     noise_norm = noise_norm_sq ** 0.5
@@ -1154,7 +1157,7 @@ def aggregate_deltas(
         step_norm = args.target_step
     else:
         step_norm = uncapped_step_norm
-
+    r_k = step_norm / (uncapped_step_norm + 1e-12)
     step_avg_ratio = step_norm / max(avg_norm_pre_noise, 1e-12)
     logging.info(
         'server_lr(base)=%.4g eta_eff=%.4g (cap=%s) ||step||=%.4f (uncapped %.4f) ratio(step/avg_pre_noise)=%.3f ||u||=%.4f',
@@ -1173,7 +1176,7 @@ def aggregate_deltas(
     for key, tensor in step.items():
         global_w[key] += tensor
 
-    return avg_updates, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms
+    return avg_updates, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms, r_k
 
 
 if __name__ == '__main__':
@@ -1338,6 +1341,8 @@ if __name__ == '__main__':
         no_improve = 0
 
         dp_steps = 0
+        min_r = 1.0
+        rescale_history: list[float] = []
         for comm_round in range(n_comm_rounds):
             #logger.info('in comm round:' + str(comm_round))
             party_list_this_round = party_list_rounds[comm_round]
@@ -1403,22 +1408,11 @@ if __name__ == '__main__':
                 dp_steps += args.num_train_tasks * len(participating_ids)
             elif args.dp_mode == 'server':
                 dp_steps += 1
-            if args.dp_mode != 'off':
-                if args.dp_constant_noise and noise_multipliers:
-                    noise_for_eps = min(noise_multipliers.values())
-                else:
-                    noise_for_eps = args.dp_noise
-                epsilon = dp_utils.compute_epsilon(
-                    dp_steps,
-                    noise_for_eps,
-                    args.dp_delta,
-                    accountant=args.dp_accountant,
-                    sampling_rate=len(participating_ids) / args.n_parties,
-                )
             eta_eff = args.server_lr
+            r_k = 1.0
             if args.dp_mode == 'server':
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
-                    _, _, _, _, _, layer_mean_scales, layer_mean_norms = aggregate_deltas(
+                    _, _, _, _, _, layer_mean_scales, layer_mean_norms, _ = aggregate_deltas(
                         global_w,
                         deltas,
                         client_norms,
@@ -1444,7 +1438,7 @@ if __name__ == '__main__':
                         )
                         log_clip[name] = math.log(layer_clips[name])
                     args.bootstrap_done = True
-                _, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms = aggregate_deltas(
+                _, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms, r_k = aggregate_deltas(
                     global_w, deltas, client_norms, client_scales, args, layer_clips, noise_multipliers
                 )
                 logging.info('Aggregate mean scale (incl client): %.4f', mean_scale)
@@ -1488,6 +1482,25 @@ if __name__ == '__main__':
                                 continue
                             global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
+            rescale_history.append(r_k)
+            min_r = min(min_r, r_k)
+            logging.info('Server step rescale r_k=%.4f (min %.4f)', r_k, min_r)
+            if r_k < 1.0:
+                logging.info('Step cap active; noise reduced')
+                print(f'Step cap active: r_k={r_k:.4f}')
+            if args.dp_mode != 'off':
+                if args.dp_constant_noise and noise_multipliers:
+                    nominal_sigma = min(noise_multipliers.values())
+                else:
+                    nominal_sigma = args.dp_noise
+                effective_sigma = nominal_sigma * min_r
+                epsilon = dp_utils.compute_epsilon(
+                    dp_steps,
+                    effective_sigma,
+                    args.dp_delta,
+                    accountant=args.dp_accountant,
+                    sampling_rate=len(participating_ids) / args.n_parties,
+                )
             if args.server_momentum and args.dp_mode != 'server':
                 delta_w = copy.deepcopy(global_w)
                 for key in delta_w:
