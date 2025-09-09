@@ -57,6 +57,7 @@ The repository now includes optional support for a **personalised transformation
   * `--dp_init_scale`: initial clip scaling (default `0.6`)
   * `--dp_clip_max`: maximum clip (default `0.8`)
   * `--dp_target_mean_scale`: desired mean clipping scale (default `0.6`)
+  * `--dp_depth_decay`: exponential clip target decay per network depth (default `1.0`, e.g. `--dp_depth_decay=0.85` so deeper blocks get progressively tighter clip targets)
   * `--dp_adapt_gain`: adaptation gain (default `0.1`)
   * `--dp_adapt_period`: rounds between clip adaptations (default `3`)
   * `--dp_bootstrap`: bootstrap clip from the first round's median norm (default `True`)
