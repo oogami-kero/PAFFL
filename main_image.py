@@ -152,6 +152,7 @@ def get_args():
     parser.add_argument('--num_true_test_ratio', type=int, default=10, help='number of meta-test tasks (10)')
     parser.add_argument('--fine_tune_steps', type=int, default=5, help='number of meta-learning steps (5)')
     parser.add_argument('--fine_tune_lr', type=float, default=0.1, help='number of meta-learning lr (0.05)')
+    parser.add_argument('--fine_tune_clip', type=float, default=0.5, help='L2 clip radius for fine-tune updates')
     parser.add_argument('--meta_lr', type=float, default=0.1/100, help='number of meta-learning lr (0.05)')
     parser.add_argument('--comm_round', type=int, default=5000, help='number of maximum communication roun')
     parser.add_argument('--optimizer', type=str, default='sgd',
@@ -618,10 +619,26 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             for name, param in net_new.named_parameters():
                                 if name in ('few_classify.weight', 'few_classify.bias') and param.requires_grad:
                                     params_to_update.append(param)
+                            deltas = []
                             for param in params_to_update:
                                 if param.grad is None:
+                                    deltas.append(None)
+                                else:
+                                    deltas.append(-inner_lr * param.grad)
+                            if deltas:
+                                total_norm = torch.sqrt(
+                                    sum(delta.pow(2).sum() for delta in deltas if delta is not None)
+                                )
+                                clip_r = args.fine_tune_clip
+                                if total_norm > clip_r:
+                                    scale = clip_r / (total_norm + 1e-12)
+                                    deltas = [
+                                        delta * scale if delta is not None else None for delta in deltas
+                                    ]
+                            for param, delta in zip(params_to_update, deltas):
+                                if delta is None:
                                     continue
-                                param.data.add_(-inner_lr * param.grad)
+                                param.data.add_(delta)
 
                     X_out_query, _, out = net_new(X_total_query, use_amp=use_amp, amp_dtype=amp_dtype)
                     X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup, use_amp=use_amp, amp_dtype=amp_dtype)
