@@ -1,5 +1,11 @@
 import math
-from opacus.grad_sample import GradSampleModule
+
+try:
+    from opacus.grad_sample import GradSampleModule
+except Exception:  # pragma: no cover - optional dependency
+    class GradSampleModule:  # type: ignore
+        """Fallback stub when Opacus is unavailable."""
+        pass
 
 
 def remove_dp_hooks(model):
@@ -53,7 +59,10 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
     accountant : str, optional
         If ``'rdp'`` an approximate R\u00E9nyi DP accountant is used for composition.
         If ``'prv'`` a privacy random variable accountant from ``prv_accountant``
-        computes ε via a PLD representation. The accountant's
+        computes ε via a PLD representation. If the high-level accountant
+        construction fails due to tiny noise multipliers, a discretised
+        low-level API is used, falling back to an approximate R\u00E9nyi DP bound
+        if PRV evaluation is still not feasible. The accountant's
         ``compute_epsilon`` may return a scalar or a tuple ``(lower, estimate,
         upper)``; the estimate is used. Any other value falls back to a basic
         strong composition bound.
@@ -81,10 +90,10 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
         return eps
 
     if accountant == 'prv':
-        from prv_accountant import Accountant
-
         mesh = noise_mult / 10 if mesh_size is None else mesh_size
         try:
+            from prv_accountant import Accountant
+
             acc = Accountant(
                 noise_multiplier=noise_mult,
                 sampling_probability=sampling_rate,
@@ -94,18 +103,25 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
                 mesh_size=mesh,
             )
             eps = acc.compute_epsilon(num_steps)
-        except RuntimeError:
+        except (AssertionError, RuntimeError):
             try:
-                acc = Accountant(
+                from prv_accountant import accountant as acc_mod, prv, discretisers
+
+                tprv = prv.GaussianMechanism(
                     noise_multiplier=noise_mult,
                     sampling_probability=sampling_rate,
-                    delta=delta,
+                )
+                domain = acc_mod.Domain(-50 * noise_mult, 50 * noise_mult)
+                disc = discretisers.ExplicitDomain(domain=domain, mesh_size=mesh)
+                acc = acc_mod.PRVAccountant(
+                    prvs=[tprv],
+                    discretiser=disc,
                     max_compositions=num_steps,
                     eps_error=0.1,
-                    mesh_size=mesh / 10,
+                    delta=delta,
                 )
                 eps = acc.compute_epsilon(num_steps)
-            except RuntimeError:
+            except Exception:
                 return compute_epsilon(num_steps, noise_mult, delta, 'rdp', sampling_rate)
         return eps if isinstance(eps, float) else eps[1]
 
