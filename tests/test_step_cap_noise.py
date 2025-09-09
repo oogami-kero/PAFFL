@@ -45,7 +45,7 @@ def test_eta_cap_uses_pre_noise_norm():
     assert u_norm > 1e3
 
     torch.manual_seed(0)
-    _, _, _, _, eta_eff, _, _, _ = main_image.aggregate_deltas(
+    _, _, _, _, eta_eff, _, _, _, _ = main_image.aggregate_deltas(
         global_w,
         deltas,
         client_norms,

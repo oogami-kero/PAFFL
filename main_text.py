@@ -12,6 +12,7 @@ import datetime
 import random
 import time
 import math
+import csv
 
 from PIL import Image
 
@@ -966,7 +967,7 @@ def aggregate_deltas(
     -------
     tuple
         avg_updates, mean_norm, median_norm, mean_scale, eta_eff,
-        layer_mean_scales, layer_mean_norms, r_k
+        layer_mean_scales, layer_mean_norms, r_k, noise_norm
     """
 
     def _is_bn_or_bias(name: str, tensor: torch.Tensor) -> bool:
@@ -1045,7 +1046,7 @@ def aggregate_deltas(
 
     avg_updates: dict[str, torch.Tensor] = {}
     avg_norm_sq = 0.0
-    noise_norm_sq = 0.0
+    noise_terms: dict[str, torch.Tensor] = {}
     updates = {}
     for key in global_w:
         if 'few_classify' in key or 'transform_layer' in key or 'transformer' in key:
@@ -1077,16 +1078,16 @@ def aggregate_deltas(
         else:
             noise_std = noise_mult * layer_clips.get(key, args.dp_clip) / num_clients
         noise = torch.randn_like(avg_update) * noise_std
+        noise_terms[key] = noise
         update = avg_update + noise
         updates[key] = update
         avg_norm_sq += avg_update.pow(2).sum().item()
-        noise_norm_sq += noise.pow(2).sum().item()
 
     if pre_clip_only:
-        return avg_updates, mean_norm, median_norm, mean_scale, 0.0, layer_mean_scales, layer_mean_norms, 1.0
+        return avg_updates, mean_norm, median_norm, mean_scale, 0.0, layer_mean_scales, layer_mean_norms, 1.0, 0.0
 
     avg_norm = avg_norm_sq ** 0.5
-    noise_norm = noise_norm_sq ** 0.5
+    raw_noise_norm = torch.sqrt(sum(v.pow(2).sum() for v in noise_terms.values()))
 
     u: dict[str, torch.Tensor] = {}
     u_norm_sq = 0.0
@@ -1102,7 +1103,7 @@ def aggregate_deltas(
             u_norm_sq += update.pow(2).sum().item()
     u_norm = u_norm_sq ** 0.5
     avg_norm_pre_noise = avg_norm
-    logging.info('||avg_pre_noise||=%.4f ||noise||=%.4f ||u||=%.4f', avg_norm_pre_noise, noise_norm, u_norm)
+    logging.info('||avg_pre_noise||=%.4f ||noise||=%.4f ||u||=%.4f', avg_norm_pre_noise, raw_noise_norm, u_norm)
 
     # Cap step size using the pre-noise averaged update norm
     eta_cap = args.target_step / max(avg_norm_pre_noise, 1e-12)
@@ -1122,6 +1123,7 @@ def aggregate_deltas(
         step_norm = uncapped_step_norm
     r_k = step_norm / (uncapped_step_norm + 1e-12)
     step_avg_ratio = step_norm / max(avg_norm_pre_noise, 1e-12)
+    noise_norm = r_k * raw_noise_norm
 
     logging.info(
         'server_lr(base)=%.4g eta_eff=%.4g (cap=%s) ||step||=%.4f (uncapped %.4f) ratio(step/avg_pre_noise)=%.3f ||u||=%.4f',
@@ -1135,7 +1137,7 @@ def aggregate_deltas(
     )
     for key, tensor in step.items():
         global_w[key] += tensor
-    return avg_updates, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms, r_k
+    return avg_updates, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms, r_k, noise_norm
 
 
 if __name__ == '__main__':
@@ -1204,6 +1206,10 @@ if __name__ == '__main__':
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
     logger.info(device)
+
+    noise_csv_path = os.path.join(args.logdir, args.log_file_name + '_noise.csv')
+    with open(noise_csv_path, 'w', newline='') as f:
+        csv.writer(f).writerow(['round', 'noise_std', 'noise_norm'])
 
     seed = args.init_seed
     if args.dataset=='20newsgroup':
@@ -1369,9 +1375,11 @@ if __name__ == '__main__':
                 dp_steps += 1
             eta_eff = args.server_lr
             r_k = 1.0
+            noise_std = 0.0
+            noise_norm = 0.0
             if args.dp_mode == 'server':
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
-                    _, _, _, _, _, layer_mean_scales, layer_mean_norms, _ = aggregate_deltas(
+                    _, _, _, _, _, layer_mean_scales, layer_mean_norms, _, _ = aggregate_deltas(
                         global_w,
                         deltas,
                         client_norms,
@@ -1397,9 +1405,10 @@ if __name__ == '__main__':
                         )
                         log_clip[name] = math.log(layer_clips[name])
                     args.bootstrap_done = True
-                _, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms, r_k = aggregate_deltas(
+                _, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms, r_k, noise_norm = aggregate_deltas(
                     global_w, deltas, client_norms, client_scales, args, layer_clips, noise_multipliers
                 )
+                noise_std = args.dp_noise * (args.dp_clip / len(participating_ids)) * r_k
                 logging.info('Aggregate mean scale (incl client): %.4f', mean_scale)
                 logging.info('Client mean scale: %.4f', float(np.mean(list(client_scales.values()))))
                 decay = 0.9
@@ -1439,6 +1448,11 @@ if __name__ == '__main__':
                             if 'transform_layer' in key:
                                 continue
                             global_w[key] += net_para[key] * fed_avg_freqs[net_id]
+
+            print(f'Noise std={noise_std:.3e}, noise L2={noise_norm:.3e}')
+            logger.info('Noise std=%.3e, noise L2=%.3e', noise_std, noise_norm)
+            with open(noise_csv_path, 'a', newline='') as f:
+                csv.writer(f).writerow([comm_round, noise_std, noise_norm])
 
             rescale_history.append(r_k)
             min_r = min(min_r, r_k)
