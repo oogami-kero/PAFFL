@@ -39,7 +39,7 @@ def remove_dp_hooks(model):
     return model
 
 
-def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate=1.0):
+def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate=1.0, mesh_size=None):
     """Return an ``epsilon`` estimate for the Gaussian mechanism.
 
     Parameters
@@ -60,6 +60,9 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
     sampling_rate : float, optional
         Probability that a given client participates in a round. Only used when
         ``accountant`` is ``'rdp'`` or ``'prv'``.
+    mesh_size : float, optional
+        Resolution of the numerical integration grid used by the PRV accountant.
+        If ``None`` a heuristic of ``noise_mult / 10`` is applied.
 
     Returns
     -------
@@ -80,14 +83,30 @@ def compute_epsilon(num_steps, noise_mult, delta, accountant=None, sampling_rate
     if accountant == 'prv':
         from prv_accountant import Accountant
 
-        accountant = Accountant(
-            noise_multiplier=noise_mult,
-            sampling_probability=sampling_rate,
-            delta=delta,
-            max_compositions=num_steps,
-            eps_error=0.1,
-        )
-        eps = accountant.compute_epsilon(num_steps)
+        mesh = noise_mult / 10 if mesh_size is None else mesh_size
+        try:
+            acc = Accountant(
+                noise_multiplier=noise_mult,
+                sampling_probability=sampling_rate,
+                delta=delta,
+                max_compositions=num_steps,
+                eps_error=0.1,
+                mesh_size=mesh,
+            )
+            eps = acc.compute_epsilon(num_steps)
+        except RuntimeError:
+            try:
+                acc = Accountant(
+                    noise_multiplier=noise_mult,
+                    sampling_probability=sampling_rate,
+                    delta=delta,
+                    max_compositions=num_steps,
+                    eps_error=0.1,
+                    mesh_size=mesh / 10,
+                )
+                eps = acc.compute_epsilon(num_steps)
+            except RuntimeError:
+                return compute_epsilon(num_steps, noise_mult, delta, 'rdp', sampling_rate)
         return eps if isinstance(eps, float) else eps[1]
 
     return math.sqrt(2 * num_steps * math.log(1 / delta)) / noise_mult
