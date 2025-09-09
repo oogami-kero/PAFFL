@@ -22,7 +22,7 @@ from utils import *
 from opacus import PrivacyEngine
 from opacus.grad_sample import GradSampleModule
 import dp_utils
-from dp_utils import remove_dp_hooks, get_param_block
+from dp_utils import remove_dp_hooks, get_param_block, aggregate_noise_std
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -1211,7 +1211,7 @@ if __name__ == '__main__':
 
     noise_csv_path = os.path.join(args.logdir, args.log_file_name + '_noise.csv')
     with open(noise_csv_path, 'w', newline='') as f:
-        csv.writer(f).writerow(['round', 'noise_std', 'noise_norm'])
+        csv.writer(f).writerow(['round', 'noise_std_rep', 'noise_norm'])
 
     seed = args.init_seed
     if args.dataset=='20newsgroup':
@@ -1378,7 +1378,7 @@ if __name__ == '__main__':
                 dp_steps += 1
             eta_eff = args.server_lr
             r_k = 1.0
-            noise_std = 0.0
+            noise_std_rep = 0.0
             noise_norm = 0.0
             if args.dp_mode == 'server':
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
@@ -1411,7 +1411,9 @@ if __name__ == '__main__':
                 _, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms, r_k, noise_norm = aggregate_deltas(
                     global_w, deltas, client_norms, client_scales, args, layer_clips, noise_multipliers
                 )
-                noise_std = args.dp_noise * (args.dp_clip / len(participating_ids)) * r_k
+                noise_std_rep = aggregate_noise_std(
+                    layer_clips, noise_multipliers, len(participating_ids), args.dp_noise, args.dp_constant_noise
+                ) * r_k
                 logging.info('Aggregate mean scale (incl client): %.4f', mean_scale)
                 logging.info('Client mean scale: %.4f', float(np.mean(list(client_scales.values()))))
                 decay = 0.9
@@ -1456,10 +1458,10 @@ if __name__ == '__main__':
                                 continue
                             global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
-            print(f'Noise std={noise_std:.3e}, noise L2={noise_norm:.3e}')
-            logger.info('Noise std=%.3e, noise L2=%.3e', noise_std, noise_norm)
+            print(f'Noise std={noise_std_rep:.3e}, noise L2={noise_norm:.3e}')
+            logger.info('Noise std=%.3e, noise L2=%.3e', noise_std_rep, noise_norm)
             with open(noise_csv_path, 'a', newline='') as f:
-                csv.writer(f).writerow([comm_round, noise_std, noise_norm])
+                csv.writer(f).writerow([comm_round, noise_std_rep, noise_norm])
 
             rescale_history.append(r_k)
             min_r = min(min_r, r_k)

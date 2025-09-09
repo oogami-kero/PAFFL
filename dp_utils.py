@@ -7,6 +7,8 @@ except Exception:  # pragma: no cover - optional dependency
         """Fallback stub when Opacus is unavailable."""
         pass
 
+import numpy as np
+
 
 BLOCK_PREFIXES = ('layer1', 'layer2', 'layer3', 'layer4', 'fc', 'head')
 
@@ -29,6 +31,43 @@ def get_param_block(name):
         if token in BLOCK_PREFIXES:
             return token
     return None
+
+
+def aggregate_noise_std(layer_clips, noise_multipliers, num_clients, dp_noise, dp_constant_noise, agg='mean'):
+    """Return an aggregate of per-parameter noise standard deviations.
+
+    Parameters
+    ----------
+    layer_clips : dict[str, float]
+        Mapping from parameter names to clipping thresholds.
+    noise_multipliers : dict[str, float] | None
+        Optional per-parameter noise multipliers.
+    num_clients : int
+        Number of participating clients in the round.
+    dp_noise : float
+        Default noise multiplier.
+    dp_constant_noise : bool
+        ``True`` when noise does not scale with the clip.
+    agg : str, optional
+        Aggregation mode: ``'mean'`` (default) or ``'max'``.
+
+    Returns
+    -------
+    float
+        Representative noise standard deviation across parameters.
+    """
+    noise_stds = []
+    for name, clip in layer_clips.items():
+        if '.bn' in name or name.endswith('.bias'):
+            continue
+        mult = dp_noise
+        if noise_multipliers is not None:
+            mult = noise_multipliers.get(name, dp_noise)
+        std = mult / num_clients if dp_constant_noise else mult * clip / num_clients
+        noise_stds.append(std)
+    if not noise_stds:
+        return 0.0
+    return float(np.max(noise_stds)) if agg == 'max' else float(np.mean(noise_stds))
 
 
 def remove_dp_hooks(model):
