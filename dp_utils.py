@@ -8,6 +8,29 @@ except Exception:  # pragma: no cover - optional dependency
         pass
 
 
+BLOCK_PREFIXES = ('layer1', 'layer2', 'layer3', 'layer4', 'fc', 'head')
+
+
+def get_param_block(name):
+    """Return the first recognised block token from a parameter name.
+
+    Parameters
+    ----------
+    name : str
+        Dot-delimited parameter name as returned by ``state_dict``.
+
+    Returns
+    -------
+    str | None
+        First token matching a known block prefix, or ``None`` when no match is
+        found.
+    """
+    for token in name.split('.'):
+        if token in BLOCK_PREFIXES:
+            return token
+    return None
+
+
 def remove_dp_hooks(model):
     """Remove differential privacy hooks and cached gradients.
 
