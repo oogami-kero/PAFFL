@@ -22,7 +22,7 @@ from utils import *
 from opacus import PrivacyEngine
 from opacus.grad_sample import GradSampleModule
 import dp_utils
-from dp_utils import remove_dp_hooks
+from dp_utils import remove_dp_hooks, get_param_block
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -1470,7 +1470,7 @@ if __name__ == '__main__':
                     for name in layer_mean_scales:
                         if '.bn' in name or name.endswith('.bias'):
                             continue
-                        block = name.split('.')[0]
+                        block = get_param_block(name)
                         depth = BLOCK_DEPTH.get(block, 0)
                         target = args.dp_target_mean_scale * (decay ** depth)
                         log_clip[name] = log_clip.get(name, math.log(layer_clips.get(name, args.dp_clip)))
