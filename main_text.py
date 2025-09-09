@@ -1456,16 +1456,17 @@ if __name__ == '__main__':
 
             rescale_history.append(r_k)
             min_r = min(min_r, r_k)
-            logging.info('Server step rescale r_k=%.4f (min %.4f)', r_k, min_r)
+            logging.info('Server step rescale r_k=%.4f (min %.4f); scales actual noise but not epsilon', r_k, min_r)
             if r_k < 1.0:
-                logging.info('Step cap active; noise reduced')
+                logging.info('Step cap active; noise reduced (epsilon unaffected)')
                 print(f'Step cap active: r_k={r_k:.4f}')
             if args.dp_mode != 'off':
                 if args.dp_constant_noise and noise_multipliers:
                     nominal_sigma = min(noise_multipliers.values())
                 else:
                     nominal_sigma = args.dp_noise
-                effective_sigma = nominal_sigma * min_r
+                # r_k only scales the actual noise; epsilon uses the nominal multiplier
+                effective_sigma = nominal_sigma
                 epsilon = dp_utils.compute_epsilon(
                     dp_steps,
                     effective_sigma,
