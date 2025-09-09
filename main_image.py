@@ -34,6 +34,8 @@ clip_min: dict[str, float] = {}
 log_clip: dict[str, float] = {}
 noise_multipliers: dict[str, float] = {}
 
+REFERENCE_SHOT = 5
+
 from collections import defaultdict
 
 fine_split=defaultdict(list)
@@ -586,11 +588,13 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             if mode == 'train':
                 loss_all = 0
                 if args.fine_tune_steps > 0:
+                    inner_lr = args.fine_tune_lr * K / REFERENCE_SHOT
+                    fine_tune_steps = min(args.fine_tune_steps, K)
                     gmodel_base = gmodel._module if hasattr(gmodel, '_module') else gmodel
                     net_new = copy.deepcopy(model_template)
                     net_new.load_state_dict(gmodel_base.state_dict())
 
-                    for j in range(args.fine_tune_steps):
+                    for j in range(fine_tune_steps):
                         net_new.zero_grad()
                         with torch.autocast('cuda', enabled=False):
                             X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup, use_amp=False)
@@ -604,7 +608,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             for param in params_to_update:
                                 if param.grad is None:
                                     continue
-                                param.data.add_(-args.fine_tune_lr * param.grad)
+                                param.data.add_(-inner_lr * param.grad)
 
                     X_out_query, _, out = net_new(X_total_query, use_amp=use_amp, amp_dtype=amp_dtype)
                     X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup, use_amp=use_amp, amp_dtype=amp_dtype)
