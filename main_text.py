@@ -407,6 +407,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
     use_amp = args.use_amp and args.device != 'cpu'
     amp_dtype = torch.bfloat16 if args.amp_dtype == 'bf16' else torch.float16
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     if args.dataset == 'FC100':
         X_transform_train = transforms.Compose([
@@ -439,7 +440,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     try:
 
         def train_epoch(epoch, mode='train'):
-            nonlocal dp_optimizer, head_optimizer, tl_optimizer, gmodel, base_model, last_loss
+            nonlocal dp_optimizer, head_optimizer, tl_optimizer, gmodel, base_model, last_loss, scaler
     
             if mode == 'train':
                 loss_all = 0
@@ -589,7 +590,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                     for j in range(fine_tune_steps):
                         net_new.zero_grad()
-                        with torch.autocast('cuda', enabled=False):
+                        with torch.autocast('cuda', enabled=use_amp):
                             X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup, use_amp=False)
                             losses = F.cross_entropy(out, support_labels, reduction='none')
                         losses.mean().backward()
@@ -646,11 +647,19 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         loss_all += contras_loss / Q *0.1
                     loss_all += loss_ce(out_all, y_total)
 
-                loss_all.backward()
+                if use_amp:
+                    scaler.scale(loss_all).backward()
+                else:
+                    loss_all.backward()
                 if hasattr(dp_optimizer, 'params'):
                     for _, param in dp_named_params:
                         if hasattr(param, 'grad_sample') and param.grad_sample is not None:
                             param.grad_sample = param.grad_sample.float()
+                if use_amp:
+                    scaler.unscale_(dp_optimizer)
+                    scaler.unscale_(head_optimizer)
+                    if tl_optimizer is not None:
+                        scaler.unscale_(tl_optimizer)
                 grad_norm = torch.nn.utils.clip_grad_norm_(gmodel.parameters(), max_norm)
                 last_loss = loss_all.item()
                 print(f'batch loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
@@ -663,10 +672,17 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         grad_norm = param.grad.detach().norm(2).item()
                         prev = args.grad_norms_ma.get(name, grad_norm)
                         args.grad_norms_ma[name] = grad_ma_decay * prev + (1 - grad_ma_decay) * grad_norm
-                dp_optimizer.step()
-                head_optimizer.step()
-                if tl_optimizer is not None:
-                    tl_optimizer.step()
+                if use_amp:
+                    scaler.step(dp_optimizer)
+                    scaler.step(head_optimizer)
+                    if tl_optimizer is not None:
+                        scaler.step(tl_optimizer)
+                    scaler.update()
+                else:
+                    dp_optimizer.step()
+                    head_optimizer.step()
+                    if tl_optimizer is not None:
+                        tl_optimizer.step()
                 ############################
     
                     for name, param in gmodel.named_parameters():
@@ -743,7 +759,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         query_features = query_features.float()
 
                     clf = LogisticRegression(support_features.size(1), N).to(support_features.device).float()
-                    with torch.autocast('cuda', enabled=False):
+                    with torch.autocast('cuda', enabled=use_amp):
                         clf.fit(
                             support_features,
                             support_labels,
