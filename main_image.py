@@ -233,6 +233,8 @@ def get_args():
                         help='keep DP noise fixed when adapting clip')
     parser.add_argument('--dp_target_mean_scale', type=float, default=0.6,
                         help='target mean client clipping scale (0 < s ≤ 1)')
+    parser.add_argument('--dp_depth_decay', type=float, default=1.0,
+                        help='Exponential clip target decay per network depth (1.0 disables)')
     parser.add_argument('--dp_adapt_gain', type=float, default=0.1,
                         help='gain for mean-scale DP clip adaptation')
     parser.add_argument('--dp_adapt_period', type=int, default=3,
@@ -1349,6 +1351,7 @@ if __name__ == '__main__':
         dp_steps = 0
         min_r = 1.0
         rescale_history: list[float] = []
+        BLOCK_DEPTH = {'layer1': 0, 'layer2': 1, 'layer3': 2, 'layer4': 3, 'fc': 3, 'head': 3}
         for comm_round in range(n_comm_rounds):
             #logger.info('in comm round:' + str(comm_round))
             party_list_this_round = party_list_rounds[comm_round]
@@ -1463,11 +1466,15 @@ if __name__ == '__main__':
                         continue
                     scale_ema[name] = decay * scale_ema.get(name, s) + (1 - decay) * s
                 if (comm_round + 1) % args.dp_adapt_period == 0:
+                    decay = getattr(args, 'dp_depth_decay', 1.0)
                     for name in layer_mean_scales:
                         if '.bn' in name or name.endswith('.bias'):
                             continue
+                        block = name.split('.')[0]
+                        depth = BLOCK_DEPTH.get(block, 0)
+                        target = args.dp_target_mean_scale * (decay ** depth)
                         log_clip[name] = log_clip.get(name, math.log(layer_clips.get(name, args.dp_clip)))
-                        log_clip[name] += args.dp_adapt_gain * (args.dp_target_mean_scale - scale_ema[name])
+                        log_clip[name] += args.dp_adapt_gain * (target - scale_ema[name])
                         log_clip[name] = min(max(log_clip[name], math.log(clip_min[name])), math.log(args.dp_clip_max))
                         layer_clips[name] = math.exp(log_clip[name])
                 logging.info('clip_min: %s', clip_min)
