@@ -1336,9 +1336,9 @@ if __name__ == '__main__':
         no_improve = 0
 
         dp_steps = 0
-        for round in range(n_comm_rounds):
-            #logger.info("in comm round:" + str(round))
-            party_list_this_round = party_list_rounds[round]
+        for comm_round in range(n_comm_rounds):
+            #logger.info('in comm round:' + str(comm_round))
+            party_list_this_round = party_list_rounds[comm_round]
 
             global_w = global_model.state_dict()
             if args.server_momentum and args.dp_mode != 'server':
@@ -1395,8 +1395,8 @@ if __name__ == '__main__':
                     nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
 
-            logger.info('Round %d loss %.4f', round, round_loss)
-            print(f'Round {round} loss: {round_loss:.4f}')
+            logger.info('Round %d loss %.4f', comm_round, round_loss)
+            print(f'Round {comm_round} loss: {round_loss:.4f}')
             if args.dp_mode == 'local':
                 dp_steps += args.num_train_tasks * len(participating_ids)
             elif args.dp_mode == 'server':
@@ -1457,7 +1457,7 @@ if __name__ == '__main__':
                     if '.bn' in name or name.endswith('.bias'):
                         continue
                     scale_ema[name] = decay * scale_ema.get(name, s) + (1 - decay) * s
-                if (round + 1) % args.dp_adapt_period == 0:
+                if (comm_round + 1) % args.dp_adapt_period == 0:
                     for name in layer_mean_scales:
                         if '.bn' in name or name.endswith('.bias'):
                             continue
@@ -1505,8 +1505,8 @@ if __name__ == '__main__':
 
             #global_model.cuda()
 
-            print('>> Current Round: {}'.format(round))
-            logger.info('>> Current Round: {}'.format(round))
+            print('>> Current Round: {}'.format(comm_round))
+            logger.info('>> Current Round: {}'.format(comm_round))
             if args.dp_mode != 'off' and args.print_eps:
                 print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
                 logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
