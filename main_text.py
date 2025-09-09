@@ -1080,6 +1080,24 @@ def aggregate_deltas(
     if pre_clip_only:
         return avg_updates, mean_norm, median_norm, mean_scale, 0.0, layer_mean_scales, layer_mean_norms
 
+    if getattr(args, 'dp_mode', 'off') != 'off':
+        num_participants = len(deltas)
+        if num_participants > 0:
+            total_clients = getattr(args, 'total_clients', getattr(args, 'n_parties', num_participants))
+            q = num_participants / total_clients
+            if args.dp_constant_noise and noise_multipliers:
+                sigma_eff = min(noise_multipliers.values())
+            else:
+                sigma_eff = args.dp_noise
+            dp_utils.record_dp_event(q, sigma_eff, accountant=args.dp_accountant)
+            logging.info(
+                '[acct] round=%s, q=%d/%d, sigma_eff=%.4f, noise_added=True',
+                getattr(args, 'current_round', '?'),
+                num_participants,
+                total_clients,
+                sigma_eff,
+            )
+
     avg_norm = avg_norm_sq ** 0.5
     noise_norm = noise_norm_sq ** 0.5
 
@@ -1292,7 +1310,6 @@ if __name__ == '__main__':
         best_acc_5 = 0
         no_improve = 0
 
-        dp_steps = 0
         for comm_round in range(n_comm_rounds):
             #logger.info('in comm round:' + str(comm_round))
             party_list_this_round = party_list_rounds[comm_round]
@@ -1354,24 +1371,23 @@ if __name__ == '__main__':
 
             logger.info('Round %d loss %.4f', comm_round, round_loss)
             print(f'Round {comm_round} loss: {round_loss:.4f}')
-            if args.dp_mode == 'local':
-                dp_steps += args.num_train_tasks * len(participating_ids)
-            elif args.dp_mode == 'server':
-                dp_steps += 1
-            if args.dp_mode != 'off':
-                if args.dp_constant_noise and noise_multipliers:
-                    noise_for_eps = min(noise_multipliers.values())
-                else:
-                    noise_for_eps = args.dp_noise
-                epsilon = dp_utils.compute_epsilon(
-                    dp_steps,
-                    noise_for_eps,
-                    args.dp_delta,
-                    accountant=args.dp_accountant,
-                    sampling_rate=len(participating_ids) / args.n_parties,
+
+            num_participants = len(participating_ids)
+            total_clients = getattr(args, 'total_clients', args.n_parties)
+            if args.dp_mode == 'local' and num_participants > 0:
+                q = num_participants / total_clients
+                for _ in range(args.num_train_tasks * num_participants):
+                    dp_utils.record_dp_event(q, args.dp_noise, accountant=args.dp_accountant)
+                logging.info(
+                    '[acct] round=%d, q=%d/%d, sigma_eff=%.4f, noise_added=True',
+                    comm_round,
+                    num_participants,
+                    total_clients,
+                    args.dp_noise,
                 )
             eta_eff = args.server_lr
             if args.dp_mode == 'server':
+                args.current_round = comm_round
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
                     _, _, _, _, _, layer_mean_scales, layer_mean_norms = aggregate_deltas(
                         global_w,
@@ -1461,6 +1477,8 @@ if __name__ == '__main__':
 
             print('>> Current Round: {}'.format(comm_round))
             logger.info('>> Current Round: {}'.format(comm_round))
+            if args.dp_mode != 'off':
+                epsilon = dp_utils.get_epsilon(args.dp_delta, accountant=args.dp_accountant)
             if args.dp_mode != 'off' and args.print_eps:
                 print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
                 logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
