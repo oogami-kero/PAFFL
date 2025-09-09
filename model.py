@@ -46,9 +46,7 @@ class LogisticRegression(nn.Module):
             out = self.forward(X)
             loss = criterion(out, y)
             if l2_reg > 0:
-                l2_penalty = 0
-                for p in self.parameters():
-                    l2_penalty += p.pow(2).sum()
+                l2_penalty = sum(p.pow(2).sum() for p in self.parameters())
                 loss = loss + l2_reg * l2_penalty
             loss.backward()
             return loss

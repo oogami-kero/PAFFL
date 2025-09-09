@@ -151,6 +151,10 @@ def get_args():
     parser.add_argument('--comm_round', type=int, default=5000, help='number of maximum communication roun')
     parser.add_argument('--optimizer', type=str, default='sgd',
                         help='optimizer: sgd, adam, amsgrad, or adamw')
+    parser.add_argument('--logreg_l2', type=float, default=1e-4,
+                        help='L2 regularization for logistic regression')
+    parser.add_argument('--logreg_iter_factor', type=int, default=100,
+                        help='multiplier for logistic regression max_iter')
     
     
     parser.add_argument("--bert_cache_dir", default=None, type=str,
@@ -743,7 +747,12 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                     clf = LogisticRegression(support_features.size(1), N).to(support_features.device).float()
                     with torch.autocast('cuda', enabled=False):
-                        clf.fit(support_features, support_labels, max_iter=1000)
+                        clf.fit(
+                            support_features,
+                            support_labels,
+                            max_iter=args.logreg_iter_factor * K,
+                            l2_reg=args.logreg_l2,
+                        )
                         with torch.inference_mode():
                             out = clf.predict_proba(query_features)
 
