@@ -1440,6 +1440,8 @@ if __name__ == '__main__':
                         layer_clips[name] = math.exp(log_clip[name])
                 logging.info('clip_min: %s', clip_min)
                 logging.info('layer_clips: %s', layer_clips)
+                with open('layer_clips.json', 'w') as f:
+                    json.dump({k: float(v) for k, v in layer_clips.items()}, f, indent=2)
                 logging.info('layer_mean_scales: %s', layer_mean_scales)
             else:
                 total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
