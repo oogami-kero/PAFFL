@@ -56,6 +56,7 @@ The repository now includes optional support for a **personalised transformation
   * `--dp_k_min`: floor multiplier for per-layer norms (default `0.2`)
   * `--dp_init_scale`: initial clip scaling (default `0.6`)
   * `--dp_clip_max`: maximum clip (default `0.8`)
+  * `--no_client_clipping`: disable per-client clipping while retaining server-side DP
   * `--dp_target_mean_scale`: desired mean clipping scale (default `0.6`)
   * `--dp_depth_decay`: exponential clip target decay per network depth (default `1.0`, e.g. `--dp_depth_decay=0.85` so deeper blocks get progressively tighter clip targets)
   * `--dp_adapt_gain`: adaptation gain (default `0.1`)
