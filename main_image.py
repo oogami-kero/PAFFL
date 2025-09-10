@@ -1008,7 +1008,7 @@ def aggregate_deltas(
     Returns
     -------
     tuple
-        avg_updates, mean_norm, median_norm, mean_scale, eta_eff,
+        avg_updates, mean_norm, median_norm, mean_scale,
         layer_mean_scales, layer_mean_norms, r_k, noise_norm
     """
 
@@ -1145,49 +1145,30 @@ def aggregate_deltas(
             u_norm_sq += update.pow(2).sum().item()
     u_norm = u_norm_sq ** 0.5
     avg_norm_pre_noise = avg_norm
-    logging.info('||avg_pre_noise||=%.4f ||noise||=%.4f ||u||=%.4f', avg_norm_pre_noise, raw_noise_norm, u_norm)
-
-    desired_ratio = getattr(args, 'step_avg_target', 0.0)
-    # Cap step size using the pre-noise averaged update norm
-    eta_cap = args.target_step / max(avg_norm_pre_noise, 1e-12)
-    eta_eff = min(args.server_lr, eta_cap)
-    if desired_ratio > 0:
-        eta_ratio = desired_ratio * avg_norm_pre_noise / max(u_norm, 1e-12)
-        eta_eff = min(args.server_lr, max(eta_eff, eta_ratio))
 
     step: dict[str, torch.Tensor] = {}
     for key, tensor in u.items():
-        step[key] = eta_eff * tensor
-    step_norm_sq = sum(t.pow(2).sum().item() for t in step.values())
-    uncapped_step_norm = step_norm_sq ** 0.5
-    if uncapped_step_norm > args.target_step:
-        scale = args.target_step / uncapped_step_norm
+        step[key] = args.server_lr * tensor
+    uncapped_step_norm_sq = sum(t.pow(2).sum().item() for t in step.values())
+    uncapped_step_norm = uncapped_step_norm_sq ** 0.5
+    r_k = min(1.0, args.target_step / max(uncapped_step_norm, 1e-12))
+    if r_k < 1.0:
         for key in step:
-            step[key] *= scale
-        step_norm = args.target_step
-    else:
-        step_norm = uncapped_step_norm
-    r_k = step_norm / (uncapped_step_norm + 1e-12)
-    step_avg_ratio = step_norm / max(avg_norm_pre_noise, 1e-12)
+            step[key] *= r_k
+    step_norm = r_k * uncapped_step_norm
     noise_norm = r_k * raw_noise_norm
     logging.info(
-        'server_lr(base)=%.4g eta_eff=%.4g (cap=%s) ||step||=%.4f (uncapped %.4f) ratio(step/avg_pre_noise)=%.3f ||u||=%.4f',
-        args.server_lr,
-        eta_eff,
-        'ON' if eta_eff < args.server_lr else 'off',
-        step_norm,
-        uncapped_step_norm,
-        step_avg_ratio,
+        '||avg_pre_noise||=%.4f ||u||=%.4f ||step||=%.4f r_k=%.4f %s',
+        avg_norm_pre_noise,
         u_norm,
+        step_norm,
+        r_k,
+        'cap=ON' if r_k < 1.0 else 'cap=off',
     )
-    kp = getattr(args, 'step_avg_kp', 0.0)
-    if kp > 0 and desired_ratio > 0:
-        args.target_step *= 1 + kp * (desired_ratio - step_avg_ratio)
-        args.target_step = max(1e-12, args.target_step)
     for key, tensor in step.items():
         global_w[key] += tensor
 
-    return avg_updates, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms, r_k, noise_norm
+    return avg_updates, mean_norm, median_norm, mean_scale, layer_mean_scales, layer_mean_norms, r_k, noise_norm
 
 
 if __name__ == '__main__':
@@ -1424,13 +1405,12 @@ if __name__ == '__main__':
                 dp_steps += args.num_train_tasks * len(participating_ids)
             elif args.dp_mode == 'server':
                 dp_steps += 1
-            eta_eff = args.server_lr
             r_k = 1.0
             noise_std_rep = 0.0
             noise_norm = 0.0
             if args.dp_mode == 'server':
                 if args.dp_bootstrap and not getattr(args, 'bootstrap_done', False):
-                    _, _, _, _, _, layer_mean_scales, layer_mean_norms, _, _ = aggregate_deltas(
+                    _, _, _, _, layer_mean_scales, layer_mean_norms, _, _ = aggregate_deltas(
                         global_w,
                         deltas,
                         client_norms,
@@ -1458,7 +1438,7 @@ if __name__ == '__main__':
                         )
                         log_clip[name] = math.log(layer_clips[name])
                     args.bootstrap_done = True
-                _, mean_norm, median_norm, mean_scale, eta_eff, layer_mean_scales, layer_mean_norms, r_k, noise_norm = aggregate_deltas(
+                _, mean_norm, median_norm, mean_scale, layer_mean_scales, layer_mean_norms, r_k, noise_norm = aggregate_deltas(
                     global_w, deltas, client_norms, client_scales, args, layer_clips, noise_multipliers
                 )
                 noise_std_rep = aggregate_noise_std(
