@@ -12,14 +12,27 @@ model_stub = types.SimpleNamespace(WordEmbed=object)
 sys.modules.setdefault('model', model_stub)
 utils_stub = types.SimpleNamespace()
 sys.modules.setdefault('utils', utils_stub)
+torchvision_transforms_stub = types.SimpleNamespace(
+    Normalize=lambda *a, **k: None,
+    Compose=lambda *a, **k: None,
+    RandomCrop=lambda *a, **k: None,
+    RandomHorizontalFlip=lambda *a, **k: None,
+    RandomRotation=lambda *a, **k: None,
+    ToTensor=lambda *a, **k: None,
+    ToPILImage=lambda *a, **k: None,
+)
+torchvision_stub = types.SimpleNamespace(transforms=torchvision_transforms_stub)
+sys.modules.setdefault('torchvision', torchvision_stub)
+sys.modules.setdefault('torchvision.transforms', torchvision_transforms_stub)
 import main_image
 
-def test_eta_cap_uses_pre_noise_norm():
+
+def test_r_k_uses_step_norm():
     torch.manual_seed(0)
-    global_w = {'w': torch.zeros(1)}
+    global_w = {'w': torch.zeros(1, 1)}
     deltas = {
-        0: {'w': torch.tensor([1.0])},
-        1: {'w': torch.tensor([1.0])},
+        0: {'w': torch.tensor([[1.0]])},
+        1: {'w': torch.tensor([[1.0]])},
     }
     client_norms = {}
     client_scales = {0: 1.0, 1: 1.0}
@@ -36,16 +49,16 @@ def test_eta_cap_uses_pre_noise_norm():
 
     num_clients = len(deltas)
     avg_update = torch.stack([d['w'] for d in deltas.values()]).mean(0)
-    avg_norm_pre_noise = torch.norm(avg_update).item()
     noise_std = noise_multipliers['w'] * layer_clips['w'] / num_clients
     noise = torch.randn_like(avg_update) * noise_std
     u = avg_update + noise
-    u_norm = torch.norm(u).item()
-    assert avg_norm_pre_noise < 10
-    assert u_norm > 1e3
+    step = args.server_lr * u
+    step_norm = torch.norm(step).item()
+    assert step_norm > 1e3
+    expected_r_k = min(1.0, args.target_step / max(step_norm, 1e-12))
 
     torch.manual_seed(0)
-    _, _, _, _, eta_eff, _, _, _, _ = main_image.aggregate_deltas(
+    _, _, _, _, _, _, r_k, _ = main_image.aggregate_deltas(
         global_w,
         deltas,
         client_norms,
@@ -54,4 +67,5 @@ def test_eta_cap_uses_pre_noise_norm():
         layer_clips,
         noise_multipliers,
     )
-    assert abs(eta_eff - args.server_lr) < 1e-6
+    assert abs(r_k - expected_r_k) < 1e-6
+
