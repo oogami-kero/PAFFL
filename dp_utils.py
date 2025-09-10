@@ -33,7 +33,7 @@ def get_param_block(name):
     return None
 
 
-def aggregate_noise_std(layer_clips, noise_multipliers, num_clients, dp_noise, dp_constant_noise, agg='mean'):
+def aggregate_noise_std(layer_clips, noise_multipliers, num_clients, dp_noise, dp_constant_noise, agg='mean', exclude=None):
     """Return an aggregate of per-parameter noise standard deviations.
 
     Parameters
@@ -50,14 +50,25 @@ def aggregate_noise_std(layer_clips, noise_multipliers, num_clients, dp_noise, d
         ``True`` when noise does not scale with the clip.
     agg : str, optional
         Aggregation mode: ``'mean'`` (default) or ``'max'``.
+    exclude : Sequence[str] | None, optional
+        Parameter name substrings that should be ignored when aggregating. Additional
+        patterns extend the default ``('few_classify', 'transform_layer', 'transformer')``.
 
     Returns
     -------
     float
         Representative noise standard deviation across parameters.
     """
+    base_exclude = ['few_classify', 'transform_layer', 'transformer']
+    if exclude is None:
+        exclude = base_exclude
+    else:
+        exclude = list(base_exclude) + list(exclude)
+
     noise_stds = []
     for name, clip in layer_clips.items():
+        if any(token in name for token in exclude):
+            continue
         if '.bn' in name or name.endswith('.bias'):
             continue
         mult = dp_noise
