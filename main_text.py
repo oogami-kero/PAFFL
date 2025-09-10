@@ -217,6 +217,8 @@ def get_args():
     parser.add_argument('--dp_k_min', type=float, default=0.2, help='minimum clip multiplier relative to norm EMA')
     parser.add_argument('--dp_init_scale', type=float, default=0.6, help='initial clip scaling')
     parser.add_argument('--dp_clip_max', type=float, default=0.8, help='maximum DP-SGD clipping norm')
+    parser.add_argument('--no_client_clipping', action='store_true',
+                        help='disable per-client update clipping')
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--dp_noise', type=float, default=None, help='DP-SGD noise multiplier')
     group.add_argument('--dp_noise_scale', type=float, default=None, help='scale for DP noise as sigma = scale * clip')
@@ -895,7 +897,10 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                     )
                 ])
                 norm = torch.norm(flat).item()
-                scale = min(1.0, args.dp_clip / (norm + 1e-12))
+                if args.no_client_clipping:
+                    scale = 1.0
+                else:
+                    scale = min(1.0, args.dp_clip / (norm + 1e-12))
                 logging.info('Client %s norm %.4f scale %.4f', net_id, norm, scale)
                 prev = args.client_grad_norms.get(net_id, norm)
                 args.client_grad_norms[net_id] = grad_ma_decay * prev + (1 - grad_ma_decay) * norm
