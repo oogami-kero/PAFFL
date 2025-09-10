@@ -1093,7 +1093,7 @@ def aggregate_deltas(
         avg_norm_sq += avg_update.pow(2).sum().item()
 
     if pre_clip_only:
-        return avg_updates, mean_norm, median_norm, mean_scale, 0.0, layer_mean_scales, layer_mean_norms, 1.0, 0.0
+        return avg_updates, mean_norm, median_norm, mean_scale, layer_mean_scales, layer_mean_norms, 1.0, 0.0
 
     avg_norm = avg_norm_sq ** 0.5
     raw_noise_norm = torch.sqrt(sum(v.pow(2).sum() for v in noise_terms.values()))
