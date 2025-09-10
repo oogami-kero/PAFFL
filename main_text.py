@@ -35,6 +35,8 @@ clip_min: dict[str, float] = {}
 log_clip: dict[str, float] = {}
 noise_multipliers: dict[str, float] = {}
 
+EXEMPT_NAMES = ('transformer', 'few_classify', 'transform_layer')
+
 REFERENCE_SHOT = 5
 
 
@@ -1269,13 +1271,13 @@ if __name__ == '__main__':
     layer_clips.update({
         name: args.dp_clip
         for name in global_model.state_dict()
-        if 'transformer' not in name
+        if not any(e in name for e in EXEMPT_NAMES)
     })
     noise_multipliers.clear()
     noise_multipliers.update({
         name: args.dp_noise
         for name in global_model.state_dict()
-        if 'transformer' not in name
+        if not any(e in name for e in EXEMPT_NAMES)
     })
     for name in noise_multipliers:
         if name.endswith('bias'):
@@ -1286,7 +1288,7 @@ if __name__ == '__main__':
     scale_ema.update({
         name: args.dp_target_mean_scale
         for name in global_model.state_dict()
-        if 'transformer' not in name
+        if not any(e in name for e in EXEMPT_NAMES)
     })
     n_comm_rounds = args.comm_round
     if args.load_model_file and args.alg != 'plot_visual':
@@ -1297,7 +1299,7 @@ if __name__ == '__main__':
         moment_v = {
             k: torch.zeros_like(v)
             for k, v in global_model.state_dict().items()
-            if 'transformer' not in k
+            if not any(e in k for e in EXEMPT_NAMES)
         }
     if args.alg == 'fedavg':
         use_minus = False
@@ -1394,15 +1396,17 @@ if __name__ == '__main__':
                     )
                     logging.info('Bootstrapping layer clips from first-round statistics')
                     for name, norm in layer_mean_norms.items():
-                        if '.bn' in name or name.endswith('.bias'):
+                        if '.bn' in name or name.endswith('.bias') or any(e in name for e in EXEMPT_NAMES):
                             continue
                         norm_ema[name] = norm
                         clip_min[name] = max(1e-4, args.dp_k_min * norm_ema[name])
                     for name, s in layer_mean_scales.items():
-                        if '.bn' in name or name.endswith('.bias'):
+                        if '.bn' in name or name.endswith('.bias') or any(e in name for e in EXEMPT_NAMES):
                             continue
                         scale_ema[name] = s
                     for name in norm_ema:
+                        if any(e in name for e in EXEMPT_NAMES):
+                            continue
                         layer_clips[name] = float(
                             np.clip(args.dp_init_scale * norm_ema[name], clip_min[name], args.dp_clip_max)
                         )
@@ -1418,18 +1422,18 @@ if __name__ == '__main__':
                 logging.info('Client mean scale: %.4f', float(np.mean(list(client_scales.values()))))
                 decay = 0.9
                 for name, norm in layer_mean_norms.items():
-                    if '.bn' in name or name.endswith('.bias'):
+                    if '.bn' in name or name.endswith('.bias') or any(e in name for e in EXEMPT_NAMES):
                         continue
                     norm_ema[name] = decay * norm_ema.get(name, norm) + (1 - decay) * norm
                     clip_min[name] = max(1e-4, args.dp_k_min * norm_ema[name])
                 for name, s in layer_mean_scales.items():
-                    if '.bn' in name or name.endswith('.bias'):
+                    if '.bn' in name or name.endswith('.bias') or any(e in name for e in EXEMPT_NAMES):
                         continue
                     scale_ema[name] = decay * scale_ema.get(name, s) + (1 - decay) * s
                 if (comm_round + 1) % args.dp_adapt_period == 0:
                     decay = getattr(args, 'dp_depth_decay', 1.0)
                     for name in layer_mean_scales:
-                        if '.bn' in name or name.endswith('.bias'):
+                        if '.bn' in name or name.endswith('.bias') or any(e in name for e in EXEMPT_NAMES):
                             continue
                         block = get_param_block(name)
                         depth = BLOCK_DEPTH.get(block, 0)
