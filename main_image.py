@@ -1517,18 +1517,20 @@ if __name__ == '__main__':
                     sampling_rate=len(participating_ids) / args.n_parties,
                 )
             if args.server_momentum and args.dp_mode != 'server':
-                delta_w = copy.deepcopy(global_w)
-                for key in delta_w:
-                    delta_w[key] = global_w[key] - old_w[key]
-                    moment_v[key] = args.server_momentum * moment_v[key] + (1 - args.server_momentum) * delta_w[key]
+                delta_w = {
+                    k: global_w[k] - old_w[k]
+                    for k in moment_v
+                }
+                for key, dw in delta_w.items():
+                    moment_v[key] = args.server_momentum * moment_v[key] + (1 - args.server_momentum) * dw
                 unscaled_moment_norm = 0.0
                 for v in moment_v.values():
                     unscaled_moment_norm += torch.norm(v).item() ** 2
                 unscaled_moment_norm = math.sqrt(unscaled_moment_norm)
                 eta_cap = args.target_step / max(unscaled_moment_norm, 1e-12)
                 eta_eff = min(args.server_lr, eta_cap)
-                for key in global_w:
-                    global_w[key] = old_w[key] + eta_eff * moment_v[key]
+                for key, v in moment_v.items():
+                    global_w[key] = old_w[key] + eta_eff * v
 
             global_model.load_state_dict(global_w)
 
