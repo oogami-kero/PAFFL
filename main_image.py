@@ -1515,19 +1515,23 @@ if __name__ == '__main__':
                 noise_std_rep = aggregate_noise_std(
                     layer_clips, noise_multipliers, len(participating_ids), args.dp_noise, args.dp_constant_noise
                 ) * r_k
-                print(f'Noise std={noise_std_rep:.3e}, noise L2={noise_norm:.3e}')
-                logger.info('Noise std=%.3e, noise L2=%.3e', noise_std_rep, noise_norm)
+                print(f'Noise std={noise_std_rep:.3f}, noise L2={noise_norm:.3f}')
+                logger.info('Noise std=%.3f, noise L2=%.3f', noise_std_rep, noise_norm)
                 with open(noise_csv_path, 'a', newline='') as f:
-                    csv.writer(f).writerow([comm_round, noise_std_rep, noise_norm])
+                    csv.writer(f).writerow([
+                        comm_round,
+                        f'{noise_std_rep:.6f}',
+                        f'{noise_norm:.6f}',
+                    ])
             elif args.dp_mode == 'local':
                 client_noise_mean = float(np.mean(list(client_noise.values()))) if client_noise else 0.0
                 client_grad_mean = float(np.mean(list(client_grad.values()))) if client_grad else 0.0
                 client_ratio = client_noise_mean / (client_grad_mean + 1e-12)
                 print(
-                    f'Client DP: noise L2={client_noise_mean:.3e}, grad L2={client_grad_mean:.3e}, noise/grad={client_ratio:.3e}'
+                    f'Client DP: noise L2={client_noise_mean:.3f}, grad L2={client_grad_mean:.3f}, noise/grad={client_ratio:.3f}'
                 )
                 logger.info(
-                    'Client DP: noise L2=%.3e, grad L2=%.3e, noise/grad=%.3e',
+                    'Client DP: noise L2=%.3f, grad L2=%.3f, noise/grad=%.3f',
                     client_noise_mean,
                     client_grad_mean,
                     client_ratio,
@@ -1535,9 +1539,9 @@ if __name__ == '__main__':
                 with open(noise_csv_path, 'a', newline='') as f:
                     csv.writer(f).writerow([
                         comm_round,
-                        client_noise_mean,
-                        client_grad_mean,
-                        client_ratio,
+                        f'{client_noise_mean:.6f}',
+                        f'{client_grad_mean:.6f}',
+                        f'{client_ratio:.6f}',
                     ])
 
             rescale_history.append(r_k)
@@ -1584,8 +1588,8 @@ if __name__ == '__main__':
             print('>> Current Round: {}'.format(comm_round))
             logger.info('>> Current Round: {}'.format(comm_round))
             if args.dp_mode != 'off' and args.print_eps:
-                print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
-                logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
+                print('Current epsilon {:.4f}, delta {:.5f}'.format(epsilon, args.dp_delta))
+                logger.info('Current epsilon {:.4f}, delta {:.5f}'.format(epsilon, args.dp_delta))
 
             mkdirs(args.modeldir+'fedavg/')
 
