@@ -19,11 +19,8 @@ from PIL import Image
 from model import *
 from model import WordEmbed
 from utils import *
-from opacus import PrivacyEngine
-from opacus.grad_sample import GradSampleModule
 import dp_utils
-from dp_utils import remove_dp_hooks, get_param_block, aggregate_noise_std
-from logging_dp_optimizer import LoggingDPOptimizer
+from dp_utils import get_param_block, aggregate_noise_std
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -385,40 +382,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             weight_decay=args.reg,
         )
 
-    orig_optimizer = dp_optimizer
-
-    N, K, Q = get_n_k_q(args, mode='train', fewrel_multiplier=3)
-    total_batch = N * K + N * Q
-    sample_rate = total_batch / client_sample_size
-
-    privacy_engine = None
-    if args.dp_mode == 'local' and dp_params:
-        noise_mult = getattr(args, 'dp_noise', 0.0)
-        clip = getattr(args, 'dp_clip', 1.0)
-        privacy_engine = PrivacyEngine(accountant='rdp')
-        dummy_loader = DataLoader(
-            TensorDataset(torch.zeros(client_sample_size, 1)),
-            batch_size=total_batch,
-            shuffle=True,
-        )
-        gmodel, dp_optimizer, _ = privacy_engine.make_private(
-            module=base_model,
-            optimizer=dp_optimizer,
-            data_loader=dummy_loader,
-            noise_multiplier=noise_mult,
-            max_grad_norm=clip,
-        )
-        dp_optimizer = LoggingDPOptimizer(
-            optimizer=dp_optimizer.original_optimizer,
-            noise_multiplier=noise_mult,
-            max_grad_norm=clip,
-            expected_batch_size=total_batch,
-            loss_reduction=dp_optimizer.loss_reduction,
-            generator=dp_optimizer.generator,
-            secure_mode=dp_optimizer.secure_mode,
-        )
-        dp_optimizer.sample_rate = sample_rate
-        dp_optimizer.expected_batch_size = total_batch
     dp_scheduler = None
     head_scheduler = None
     if args.lr_schedule == 'cosine':
@@ -428,14 +391,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         head_scheduler = optim.lr_scheduler.CosineAnnealingLR(
             head_optimizer, T_max=n_epoch, eta_min=lr * args.lr_decay
         )
-    dp_named_params = [
-        (n, p) for n, p in gmodel.named_parameters()
-        if 'transform_layer' not in n and 'few_classify' not in n and 'transformer' not in n and p.requires_grad
-    ]
-    if not hasattr(args, 'grad_norms_ma'):
-        args.grad_norms_ma = {}
-    for name, _ in dp_named_params:
-        args.grad_norms_ma.setdefault(name, 0.0)
     grad_ma_decay = 0.9
     max_norm = 5.0
     tl_optimizer = None
@@ -507,11 +462,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     
             support_batch = N * K
             query_batch = N * Q
-            total_batch = support_batch + query_batch
-            sample_rate = total_batch / client_sample_size
-            if args.dp_mode == 'local':
-                dp_optimizer.expected_batch_size = total_batch
-                dp_optimizer.sample_rate = sample_rate
     
             support_labels = torch.zeros(N * K, dtype=torch.long)
             for i in range(N):
@@ -702,13 +652,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 print(f'batch loss: {last_loss:.4f}, grad_norm: {grad_norm:.4f}')
                 if torch.isnan(torch.tensor(grad_norm)) or torch.isnan(loss_all.detach()):
                     print('warning: NaN detected in loss or gradients')
-                if args.dp_mode == 'local':
-                    for name, param in dp_named_params:
-                        if param.grad is None:
-                            continue
-                        grad_norm = param.grad.detach().norm(2).item()
-                        prev = args.grad_norms_ma.get(name, grad_norm)
-                        args.grad_norms_ma[name] = grad_ma_decay * prev + (1 - grad_ma_decay) * grad_norm
                 if dp_has_grad:
                     dp_optimizer.step()
                     noise_accum += getattr(dp_optimizer, 'noise_norm', 0.0)
@@ -722,8 +665,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     for name, param in gmodel.named_parameters():
                         if 'transformer' in name:
                             param.requires_grad_(False)
-                    if isinstance(gmodel, GradSampleModule):
-                        gmodel.disable_hooks()
                     with torch.no_grad():
                         X_out_all, x_all, out_all = gmodel(
                             torch.cat([X_total_sup, X_total_query], 0),
@@ -731,8 +672,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             use_amp=use_amp,
                             amp_dtype=amp_dtype,
                         )
-                    if isinstance(gmodel, GradSampleModule):
-                        gmodel.enable_hooks()
                     for name, param in gmodel.named_parameters():
                         if 'transformer' in name:
                             param.requires_grad_(True)
@@ -863,27 +802,12 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 torch.cat(indices, 0),
             )
 
-        if args.dp_mode == 'local' and args.grad_norms_ma:
-            new_clip = float(np.percentile(list(args.grad_norms_ma.values()), 90))
-            args.dp_clip = min(new_clip, args.dp_clip_max)
-            print(f'90th percentile: {new_clip:.4f}, DP clip: {args.dp_clip:.4f}')
-            logger.info('90th percentile %.4f, DP clip %.4f', new_clip, args.dp_clip)
         if np.random.rand() < 0.3:
             print('Meta-test_Accuracy: {:.4f}'.format(np.mean(accs)))
         #logger.info("Meta-test_Accuracy: {:.4f}".format(np.mean(accs)))
 
 
     finally:
-        if args.dp_mode == 'local':
-            if hasattr(privacy_engine, 'detach'):
-                gmodel, dp_optimizer, _ = privacy_engine.detach()
-                privacy_engine = None
-                gmodel.train()
-            else:
-                dp_optimizer = orig_optimizer
-                gmodel = base_model
-                gmodel.train()
-            gmodel = remove_dp_hooks(gmodel)
         base_model.train()
     return result, epsilon, last_loss, noise_accum, grad_accum
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
@@ -957,6 +881,30 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 deltas[net_id] = {k: v * scale for k, v in delta.items()}
                 client_norms[net_id] = norm
                 client_scales[net_id] = scale
+            elif args.dp_mode == 'local':
+                new_params = net.state_dict()
+                delta = {
+                    k: new_params[k] - prev_params[k]
+                    for k in new_params
+                    if 'few_classify' not in k and 'transform_layer' not in k
+                }
+                flat = torch.cat([v.view(-1) for v in delta.values()])
+                norm = torch.norm(flat).item()
+                scale = min(1.0, args.dp_clip / (norm + 1e-12))
+                flat = flat * scale
+                noise = torch.normal(
+                    0,
+                    args.dp_noise * args.dp_clip,
+                    size=flat.shape,
+                    device=flat.device,
+                )
+                flat = flat + noise
+                pointer = 0
+                for k, v in delta.items():
+                    numel = v.numel()
+                    delta[k] = flat[pointer:pointer + numel].view_as(v)
+                    pointer += numel
+                deltas[net_id] = delta
         else:
             net.train()
             result, _, _, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
@@ -997,7 +945,9 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
     if args.dp_mode == 'server':
         return deltas, client_norms, client_scales, client_noise, client_grad, epsilon, avg_loss
-    return nets, epsilon, client_noise, client_grad, avg_loss
+    if args.dp_mode == 'local':
+        return deltas, epsilon, avg_loss
+    return nets, epsilon, avg_loss
 
 
 def aggregate_deltas(
@@ -1261,8 +1211,6 @@ if __name__ == '__main__':
         header = ['round']
         if args.dp_mode == 'server':
             header.extend(['noise_std_rep', 'noise_norm'])
-        elif args.dp_mode == 'local':
-            header.extend(['client_noise_l2', 'client_grad_l2', 'noise_over_grad'])
         csv.writer(f).writerow(header)
 
     seed = args.init_seed
@@ -1359,7 +1307,7 @@ if __name__ == '__main__':
         best_confident_acc = 0
         no_improve = 0
 
-        dp_steps = 0
+        user_rounds = defaultdict(int)
         min_r = 1.0
         rescale_history: list[float] = []
         BLOCK_DEPTH = {'layer1': 0, 'layer2': 1, 'layer3': 2, 'layer4': 3, 'fc': 3, 'head': 3}
@@ -1373,6 +1321,8 @@ if __name__ == '__main__':
 
             nets_this_round = {k: nets[k] for k in party_list_this_round}
             participating_ids = list(nets_this_round.keys())
+            for pid in participating_ids:
+                user_rounds[pid] += 1
 
             total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
 
@@ -1417,17 +1367,17 @@ if __name__ == '__main__':
                 deltas, client_norms, client_scales, client_noise, client_grad, _, round_loss = local_train_net_few_shot(
                     nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
+            elif args.dp_mode == 'local':
+                deltas, _, round_loss = local_train_net_few_shot(
+                    nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
+                )
             else:
-                _, _, client_noise, client_grad, round_loss = local_train_net_few_shot(
+                _, _, round_loss = local_train_net_few_shot(
                     nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
 
             logger.info('Round %d loss %.4f', comm_round, round_loss)
             print(f'Round {comm_round} loss: {round_loss:.4f}')
-            if args.dp_mode == 'local':
-                dp_steps += args.num_train_tasks * len(participating_ids)
-            elif args.dp_mode == 'server':
-                dp_steps += 1
             r_k = 1.0
             noise_std_rep = 0.0
             noise_norm = 0.0
@@ -1493,6 +1443,14 @@ if __name__ == '__main__':
                 with open('layer_clips.json', 'w') as f:
                     json.dump({k: float(v) for k, v in layer_clips.items()}, f, indent=2)
                 logging.info('layer_mean_scales: %s', layer_mean_scales)
+            elif args.dp_mode == 'local':
+                avg_delta = {}
+                num_clients = len(deltas)
+                for delta in deltas.values():
+                    for key, val in delta.items():
+                        if key not in avg_delta:
+                            avg_delta[key] = torch.zeros_like(val)
+                        avg_delta[key] += val / num_clients  # uniform weighting; replace with counts if public
             else:
                 total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
                 fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
@@ -1523,26 +1481,6 @@ if __name__ == '__main__':
                         f'{noise_std_rep:.6f}',
                         f'{noise_norm:.6f}',
                     ])
-            elif args.dp_mode == 'local':
-                client_noise_mean = float(np.mean(list(client_noise.values()))) if client_noise else 0.0
-                client_grad_mean = float(np.mean(list(client_grad.values()))) if client_grad else 0.0
-                client_ratio = client_noise_mean / (client_grad_mean + 1e-12)
-                print(
-                    f'Client DP: noise L2={client_noise_mean:.3f}, grad L2={client_grad_mean:.3f}, noise/grad={client_ratio:.3f}'
-                )
-                logger.info(
-                    'Client DP: noise L2=%.3f, grad L2=%.3f, noise/grad=%.3f',
-                    client_noise_mean,
-                    client_grad_mean,
-                    client_ratio,
-                )
-                with open(noise_csv_path, 'a', newline='') as f:
-                    csv.writer(f).writerow([
-                        comm_round,
-                        f'{client_noise_mean:.6f}',
-                        f'{client_grad_mean:.6f}',
-                        f'{client_ratio:.6f}',
-                    ])
 
             rescale_history.append(r_k)
             min_r = min(min_r, r_k)
@@ -1550,25 +1488,34 @@ if __name__ == '__main__':
             if r_k < 1.0:
                 logging.info('Step cap active; noise reduced (epsilon unaffected)')
                 print(f'Step cap active: r_k={r_k:.4f}')
-            if args.dp_mode != 'off':
+            if args.dp_mode == 'server':
                 if args.dp_constant_noise and noise_multipliers:
                     nominal_sigma = min(noise_multipliers.values())
                 else:
                     nominal_sigma = args.dp_noise
-                # r_k only scales the actual noise; epsilon uses the nominal multiplier
-                effective_sigma = nominal_sigma
+                dp_steps = comm_round + 1
                 epsilon = dp_utils.compute_epsilon(
                     dp_steps,
-                    effective_sigma,
+                    nominal_sigma,
                     args.dp_delta,
                     accountant=args.dp_accountant,
                     sampling_rate=len(participating_ids) / args.n_parties,
                 )
+            elif args.dp_mode == 'local':
+                orders = range(2, 257)
+                sig = args.dp_noise
+                delta = args.dp_delta
+                epsilons = []
+                for m in user_rounds.values():
+                    epsilons.append(
+                        min(m * a / (2 * sig ** 2) + math.log(1 / delta) / (a - 1) for a in orders)
+                    )
+                epsilon = max(epsilons) if epsilons else 0.0
             if args.server_momentum and args.dp_mode != 'server':
-                delta_w = {
-                    k: global_w[k] - old_w[k]
-                    for k in moment_v
-                }
+                if args.dp_mode == 'local':
+                    delta_w = avg_delta
+                else:
+                    delta_w = {k: global_w[k] - old_w[k] for k in moment_v}
                 for key, dw in delta_w.items():
                     moment_v[key] = args.server_momentum * moment_v[key] + (1 - args.server_momentum) * dw
                 unscaled_moment_norm = 0.0
@@ -1579,6 +1526,9 @@ if __name__ == '__main__':
                 eta_eff = min(args.server_lr, eta_cap)
                 for key, v in moment_v.items():
                     global_w[key] = old_w[key] + eta_eff * v
+            elif args.dp_mode == 'local':
+                for key, dw in avg_delta.items():
+                    global_w[key] = old_w[key] + dw
 
             global_model.load_state_dict(global_w)
 
