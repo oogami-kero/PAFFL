@@ -23,6 +23,7 @@ from opacus import PrivacyEngine
 from opacus.grad_sample import GradSampleModule
 import dp_utils
 from dp_utils import remove_dp_hooks, get_param_block, aggregate_noise_std
+from logging_dp_optimizer import LoggingDPOptimizer
 import warnings
 from data.class_mappings import fine_id_coarse_id, coarse_id_fine_id, coarse_split
 
@@ -340,6 +341,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     model_template = copy.deepcopy(base_model)   # DP-free template
 
     client_sample_size = len(y_train_client)
+    noise_accum = 0.0
+    grad_accum = 0.0
 
     dp_named_params = [
         (n, p) for n, p in base_model.named_parameters()
@@ -404,6 +407,15 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             data_loader=dummy_loader,
             noise_multiplier=noise_mult,
             max_grad_norm=clip,
+        )
+        dp_optimizer = LoggingDPOptimizer(
+            optimizer=dp_optimizer.original_optimizer,
+            noise_multiplier=noise_mult,
+            max_grad_norm=clip,
+            expected_batch_size=total_batch,
+            loss_reduction=dp_optimizer.loss_reduction,
+            generator=dp_optimizer.generator,
+            secure_mode=dp_optimizer.secure_mode,
         )
         dp_optimizer.sample_rate = sample_rate
         dp_optimizer.expected_batch_size = total_batch
@@ -699,6 +711,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                         args.grad_norms_ma[name] = grad_ma_decay * prev + (1 - grad_ma_decay) * grad_norm
                 if dp_has_grad:
                     dp_optimizer.step()
+                    noise_accum += getattr(dp_optimizer, 'noise_norm', 0.0)
+                    grad_accum += getattr(dp_optimizer, 'grad_norm', 0.0)
                 if head_has_grad:
                     head_optimizer.step()
                 if tl_has_grad:
@@ -871,7 +885,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 gmodel.train()
             gmodel = remove_dp_hooks(gmodel)
         base_model.train()
-    return result, epsilon, last_loss
+    return result, epsilon, last_loss, noise_accum, grad_accum
 def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu', test_only=False, test_only_k=0):
     avg_acc = 0.0
     acc_list = []
@@ -882,6 +896,8 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     deltas = {}
     client_norms = {}
     client_scales = {}
+    client_noise = {}
+    client_grad = {}
     if args.dp_mode == 'server' and not hasattr(args, 'client_grad_norms'):
         args.client_grad_norms = {}
     grad_ma_decay = 0.9
@@ -901,12 +917,14 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
         if test_only is False:
             prev_params = copy.deepcopy(net.state_dict())
             net.train()
-            result, epsilon, loss_value = train_net_few_shot_new(
+            result, epsilon, loss_value, noise_norm, grad_norm = train_net_few_shot_new(
                 net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                 device=device, test_only=False
             )
             testacc = result
             losses.append(loss_value)
+            client_noise[net_id] = noise_norm
+            client_grad[net_id] = grad_norm
             if args.dp_mode == 'server':
                 new_params = net.state_dict()
                 delta = {
@@ -941,7 +959,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 client_scales[net_id] = scale
         else:
             net.train()
-            result, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
+            result, _, _, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
                                         device=device, test_only=True, test_only_k=test_only_k)
             testacc, preacc, max_values, indices = result
             max_value_all_clients.append(max_values)
@@ -978,8 +996,8 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
         logger.info('std acc %f' % np.std(acc_list))
 
     if args.dp_mode == 'server':
-        return deltas, client_norms, client_scales, epsilon, avg_loss
-    return nets, epsilon, avg_loss
+        return deltas, client_norms, client_scales, client_noise, client_grad, epsilon, avg_loss
+    return nets, epsilon, client_noise, client_grad, avg_loss
 
 
 def aggregate_deltas(
@@ -1240,7 +1258,14 @@ if __name__ == '__main__':
 
     noise_csv_path = os.path.join(args.logdir, args.log_file_name + '_noise.csv')
     with open(noise_csv_path, 'w', newline='') as f:
-        csv.writer(f).writerow(['round', 'noise_std_rep', 'noise_norm'])
+        csv.writer(f).writerow([
+            'round',
+            'noise_std_rep',
+            'noise_norm',
+            'client_noise_l2',
+            'client_grad_l2',
+            'noise_over_grad',
+        ])
 
     seed = args.init_seed
     if args.dataset=='20newsgroup':
@@ -1391,11 +1416,11 @@ if __name__ == '__main__':
                     )
 
             if args.dp_mode == 'server':
-                deltas, client_norms, client_scales, _, round_loss = local_train_net_few_shot(
+                deltas, client_norms, client_scales, client_noise, client_grad, _, round_loss = local_train_net_few_shot(
                     nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
             else:
-                _, _, round_loss = local_train_net_few_shot(
+                _, _, client_noise, client_grad, round_loss = local_train_net_few_shot(
                     nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
 
@@ -1493,8 +1518,27 @@ if __name__ == '__main__':
 
             print(f'Noise std={noise_std_rep:.3e}, noise L2={noise_norm:.3e}')
             logger.info('Noise std=%.3e, noise L2=%.3e', noise_std_rep, noise_norm)
+            client_noise_mean = float(np.mean(list(client_noise.values()))) if client_noise else 0.0
+            client_grad_mean = float(np.mean(list(client_grad.values()))) if client_grad else 0.0
+            client_ratio = client_noise_mean / (client_grad_mean + 1e-12)
+            print(
+                f'Client DP: noise L2={client_noise_mean:.3e}, grad L2={client_grad_mean:.3e}, noise/grad={client_ratio:.3e}'
+            )
+            logger.info(
+                'Client DP: noise L2=%.3e, grad L2=%.3e, noise/grad=%.3e',
+                client_noise_mean,
+                client_grad_mean,
+                client_ratio,
+            )
             with open(noise_csv_path, 'a', newline='') as f:
-                csv.writer(f).writerow([comm_round, noise_std_rep, noise_norm])
+                csv.writer(f).writerow([
+                    comm_round,
+                    noise_std_rep,
+                    noise_norm,
+                    client_noise_mean,
+                    client_grad_mean,
+                    client_ratio,
+                ])
 
             rescale_history.append(r_k)
             min_r = min(min_r, r_k)
