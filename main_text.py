@@ -1474,10 +1474,14 @@ if __name__ == '__main__':
                                 continue
                             global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
-            print(f'Noise std={noise_std_rep:.3e}, noise L2={noise_norm:.3e}')
-            logger.info('Noise std=%.3e, noise L2=%.3e', noise_std_rep, noise_norm)
+            print(f'Noise std={noise_std_rep:.3f}, noise L2={noise_norm:.3f}')
+            logger.info('Noise std=%.3f, noise L2=%.3f', noise_std_rep, noise_norm)
             with open(noise_csv_path, 'a', newline='') as f:
-                csv.writer(f).writerow([comm_round, noise_std_rep, noise_norm])
+                csv.writer(f).writerow([
+                    comm_round,
+                    f'{noise_std_rep:.6f}',
+                    f'{noise_norm:.6f}',
+                ])
 
             rescale_history.append(r_k)
             min_r = min(min_r, r_k)
@@ -1519,8 +1523,8 @@ if __name__ == '__main__':
             print('>> Current Round: {}'.format(comm_round))
             logger.info('>> Current Round: {}'.format(comm_round))
             if args.dp_mode != 'off' and args.print_eps:
-                print('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
-                logger.info('Current epsilon {:.4f}, delta {:.1e}'.format(epsilon, args.dp_delta))
+                print('Current epsilon {:.4f}, delta {:.5f}'.format(epsilon, args.dp_delta))
+                logger.info('Current epsilon {:.4f}, delta {:.5f}'.format(epsilon, args.dp_delta))
 
             mkdirs(args.modeldir+'fedavg/')
 
