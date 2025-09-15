@@ -1258,14 +1258,12 @@ if __name__ == '__main__':
 
     noise_csv_path = os.path.join(args.logdir, args.log_file_name + '_noise.csv')
     with open(noise_csv_path, 'w', newline='') as f:
-        csv.writer(f).writerow([
-            'round',
-            'noise_std_rep',
-            'noise_norm',
-            'client_noise_l2',
-            'client_grad_l2',
-            'noise_over_grad',
-        ])
+        header = ['round']
+        if args.dp_mode == 'server':
+            header.extend(['noise_std_rep', 'noise_norm'])
+        elif args.dp_mode == 'local':
+            header.extend(['client_noise_l2', 'client_grad_l2', 'noise_over_grad'])
+        csv.writer(f).writerow(header)
 
     seed = args.init_seed
     if args.dataset=='20newsgroup':
@@ -1466,9 +1464,6 @@ if __name__ == '__main__':
                 _, mean_norm, median_norm, mean_scale, layer_mean_scales, layer_mean_norms, r_k, noise_norm = aggregate_deltas(
                     global_w, deltas, client_norms, client_scales, args, layer_clips, noise_multipliers
                 )
-                noise_std_rep = aggregate_noise_std(
-                    layer_clips, noise_multipliers, len(participating_ids), args.dp_noise, args.dp_constant_noise
-                ) * r_k
                 logging.info('Aggregate mean scale (incl client): %.4f', mean_scale)
                 logging.info('Client mean scale: %.4f', float(np.mean(list(client_scales.values()))))
                 decay = 0.9
@@ -1516,29 +1511,34 @@ if __name__ == '__main__':
                                 continue
                             global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
-            print(f'Noise std={noise_std_rep:.3e}, noise L2={noise_norm:.3e}')
-            logger.info('Noise std=%.3e, noise L2=%.3e', noise_std_rep, noise_norm)
-            client_noise_mean = float(np.mean(list(client_noise.values()))) if client_noise else 0.0
-            client_grad_mean = float(np.mean(list(client_grad.values()))) if client_grad else 0.0
-            client_ratio = client_noise_mean / (client_grad_mean + 1e-12)
-            print(
-                f'Client DP: noise L2={client_noise_mean:.3e}, grad L2={client_grad_mean:.3e}, noise/grad={client_ratio:.3e}'
-            )
-            logger.info(
-                'Client DP: noise L2=%.3e, grad L2=%.3e, noise/grad=%.3e',
-                client_noise_mean,
-                client_grad_mean,
-                client_ratio,
-            )
-            with open(noise_csv_path, 'a', newline='') as f:
-                csv.writer(f).writerow([
-                    comm_round,
-                    noise_std_rep,
-                    noise_norm,
+            if args.dp_mode == 'server':
+                noise_std_rep = aggregate_noise_std(
+                    layer_clips, noise_multipliers, len(participating_ids), args.dp_noise, args.dp_constant_noise
+                ) * r_k
+                print(f'Noise std={noise_std_rep:.3e}, noise L2={noise_norm:.3e}')
+                logger.info('Noise std=%.3e, noise L2=%.3e', noise_std_rep, noise_norm)
+                with open(noise_csv_path, 'a', newline='') as f:
+                    csv.writer(f).writerow([comm_round, noise_std_rep, noise_norm])
+            elif args.dp_mode == 'local':
+                client_noise_mean = float(np.mean(list(client_noise.values()))) if client_noise else 0.0
+                client_grad_mean = float(np.mean(list(client_grad.values()))) if client_grad else 0.0
+                client_ratio = client_noise_mean / (client_grad_mean + 1e-12)
+                print(
+                    f'Client DP: noise L2={client_noise_mean:.3e}, grad L2={client_grad_mean:.3e}, noise/grad={client_ratio:.3e}'
+                )
+                logger.info(
+                    'Client DP: noise L2=%.3e, grad L2=%.3e, noise/grad=%.3e',
                     client_noise_mean,
                     client_grad_mean,
                     client_ratio,
-                ])
+                )
+                with open(noise_csv_path, 'a', newline='') as f:
+                    csv.writer(f).writerow([
+                        comm_round,
+                        client_noise_mean,
+                        client_grad_mean,
+                        client_ratio,
+                    ])
 
             rescale_history.append(r_k)
             min_r = min(min_r, r_k)
