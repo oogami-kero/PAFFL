@@ -478,7 +478,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     try:
 
         def train_epoch(epoch, mode='train'):
-            nonlocal dp_optimizer, head_optimizer, dp_scheduler, head_scheduler, tl_optimizer, gmodel, base_model, last_loss
+            nonlocal dp_optimizer, head_optimizer, dp_scheduler, head_scheduler, tl_optimizer, gmodel, base_model, last_loss, noise_accum, grad_accum
 
             def _has_grads(optimizer):
                 """Return True if any parameter of optimizer has a gradient."""
