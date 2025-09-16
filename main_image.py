@@ -13,6 +13,7 @@ import random
 import time
 import math
 import csv
+from typing import Iterable
 
 from PIL import Image
 
@@ -33,6 +34,12 @@ moment2_ema: dict[str, float] = {}
 clip_min: dict[str, float] = {}
 log_clip: dict[str, float] = {}
 noise_multipliers: dict[str, float] = {}
+SENTINEL_LAYER_CANDIDATES: tuple[str, ...] = (
+    'layer1.0.conv1.weight',
+    'layer3.0.conv2.weight',
+    'layer4.0.conv3.weight',
+)
+sentinel_layers: set[str] = set()
 
 EXEMPT_NAMES = ('transformer', 'few_classify', 'transform_layer')
 
@@ -42,6 +49,28 @@ REFERENCE_SHOT = 5
 def clamp(value: int, min_value: int, max_value: int) -> int:
     """Clamp value within the inclusive range [min_value, max_value]."""
     return max(min_value, min(value, max_value))
+
+
+def determine_sentinel_layers(layer_names: Iterable[str]) -> set[str]:
+    """Select representative layer names to monitor during training."""
+    names = [name for name in layer_names if name.endswith('weight')]
+    if not names:
+        return set()
+    sentinels: list[str] = []
+    for candidate in SENTINEL_LAYER_CANDIDATES:
+        if candidate in names and candidate not in sentinels:
+            sentinels.append(candidate)
+    if len(sentinels) < 3:
+        sorted_names = sorted(names)
+        fallback_indices = (0, len(sorted_names) // 2, len(sorted_names) - 1)
+        for idx in fallback_indices:
+            if 0 <= idx < len(sorted_names):
+                candidate = sorted_names[idx]
+                if candidate not in sentinels:
+                    sentinels.append(candidate)
+            if len(sentinels) >= 3:
+                break
+    return set(sentinels[:3])
 
 
 def log_layer_clip_stats(layer_clips: dict[str, float], clip_max: float) -> None:
@@ -1301,6 +1330,12 @@ if __name__ == '__main__':
         for name in global_model.state_dict()
         if not any(e in name for e in EXEMPT_NAMES)
     })
+    sentinel_layers.clear()
+    sentinel_layers.update(determine_sentinel_layers(layer_clips))
+    if sentinel_layers:
+        logging.info('Sentinel layers: %s', sorted(sentinel_layers))
+    else:
+        logging.info('Sentinel layers: none selected')
     moment2_ema.clear()
     moment2_ema.update({name: layer_clips[name] ** 2 for name in layer_clips})
     norm_ema.clear()
@@ -1587,6 +1622,15 @@ if __name__ == '__main__':
                         scale_est = rms / max(current_clip, 1e-12)
                         scale_prev = scale_ema.get(name, scale_est)
                         scale_ema[name] = decay * scale_prev + (1 - decay) * scale_est
+                        if name in sentinel_layers:
+                            logging.info(
+                                'Sentinel %s: debiased=%.6f moment2=%.6f clip=%.6f scale=%.6f',
+                                name,
+                                float(debiased),
+                                float(moment2_ema[name]),
+                                float(layer_clips.get(name, float('nan'))),
+                                float(scale_ema.get(name, float('nan'))),
+                            )
                         rms_values.append(rms)
                         scale_values.append(scale_ema[name])
                     if (comm_round + 1) % args.dp_adapt_period == 0:
