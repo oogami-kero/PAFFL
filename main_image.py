@@ -1513,7 +1513,7 @@ if __name__ == '__main__':
                 epsilon = max(epsilons) if epsilons else 0.0
             if args.server_momentum and args.dp_mode != 'server':
                 if args.dp_mode == 'local':
-                    delta_w = avg_delta
+                    delta_w = {k: v for k, v in avg_delta.items() if k in moment_v}
                 else:
                     delta_w = {k: global_w[k] - old_w[k] for k in moment_v}
                 for key, dw in delta_w.items():
