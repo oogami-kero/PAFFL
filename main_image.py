@@ -1462,6 +1462,9 @@ if __name__ == '__main__':
                         depth = BLOCK_DEPTH.get(block, 0)
                         target = args.dp_target_mean_scale * (decay ** depth)
                         log_clip[name] = log_clip.get(name, math.log(layer_clips.get(name, args.dp_clip)))
+                        adjustment = args.dp_target_mean_scale - scale_ema[name]
+                        if abs(adjustment) <= args.dp_deadband:
+                            continue
                         log_clip[name] += args.dp_adapt_gain * (target - scale_ema[name])
                         log_clip[name] = min(max(log_clip[name], math.log(clip_min[name])), math.log(args.dp_clip_max))
                         layer_clips[name] = math.exp(log_clip[name])
@@ -1581,6 +1584,8 @@ if __name__ == '__main__':
                             base = layer_clips.get(name, args.dp_clip)
                             log_clip[name] = log_clip.get(name, math.log(base))
                             adjustment = args.dp_target_mean_scale - scale_ema[name]
+                            if abs(adjustment) <= args.dp_deadband:
+                                continue
                             log_clip[name] += args.dp_adapt_gain * adjustment
                             lower = math.log(clip_min[name])
                             upper = math.log(args.dp_clip_max)
