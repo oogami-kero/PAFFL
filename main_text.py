@@ -43,6 +43,17 @@ def clamp(value: int, min_value: int, max_value: int) -> int:
     """Clamp value within the inclusive range [min_value, max_value]."""
     return max(min_value, min(value, max_value))
 
+
+def log_layer_clip_stats(layer_clips: dict[str, float], clip_max: float) -> None:
+    """Log summary statistics for the current layer clipping configuration."""
+    if not layer_clips:
+        return
+    C = math.sqrt(sum(c ** 2 for c in layer_clips.values()))
+    logging.info('Global sensitivity C=%.4f', C)
+    hit_max = sum(c >= clip_max for c in layer_clips.values())
+    pct = 100.0 * hit_max / max(len(layer_clips), 1)
+    logging.info('Layers at clip_max: %.1f%%', pct)
+
 from collections import defaultdict
 
 fine_split=defaultdict(list)
@@ -1436,6 +1447,7 @@ if __name__ == '__main__':
                         log_clip[name] += args.dp_adapt_gain * (target - scale_ema[name])
                         log_clip[name] = min(max(log_clip[name], math.log(clip_min[name])), math.log(args.dp_clip_max))
                         layer_clips[name] = math.exp(log_clip[name])
+                    log_layer_clip_stats(layer_clips, args.dp_clip_max)
                 logging.info('clip_min: %s', clip_min)
                 logging.info('layer_clips: %s', layer_clips)
                 with open('layer_clips.json', 'w') as f:
@@ -1559,6 +1571,7 @@ if __name__ == '__main__':
                             upper = math.log(args.dp_clip_max)
                             log_clip[name] = min(max(log_clip[name], lower), upper)
                             layer_clips[name] = math.exp(log_clip[name])
+                        log_layer_clip_stats(layer_clips, args.dp_clip_max)
                     if rms_values:
                         logging.info(
                             'Local DP RMS norms mean=%.4f median=%.4f',
