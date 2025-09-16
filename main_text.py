@@ -1430,13 +1430,27 @@ if __name__ == '__main__':
                     if avg_delta
                     else 0.0
                 )
-                print(f'Aggregated update L2={avg_delta_norm:.6f}')
-                logger.info('Aggregated update L2=%.6f', avg_delta_norm)
+                r_k = min(1.0, args.target_step / max(avg_delta_norm, 1e-12))
+                for key in avg_delta:
+                    avg_delta[key] = avg_delta[key] * r_k
+                step_norm = (
+                    torch.norm(torch.cat([dw.view(-1) for dw in avg_delta.values()])).item()
+                    if avg_delta
+                    else 0.0
+                )
+                cap_state = 'cap=ON' if r_k < 1.0 else 'cap=off'
+                print(f'Aggregated update L2 (pre-scale)={avg_delta_norm:.6f}')
+                logger.info('Aggregated update L2 (pre-scale)=%.6f', avg_delta_norm)
+                print(f'Local step L2={step_norm:.6f}, r_k={r_k:.4f} ({cap_state})')
+                logger.info('Local step L2=%.6f, r_k=%.4f (%s)', step_norm, r_k, cap_state)
                 noise_values = list(client_noise.values())
                 grad_values = list(client_grad.values())
                 mean_noise = float(np.mean(noise_values)) if noise_values else 0.0
                 mean_grad = float(np.mean(grad_values)) if grad_values else 0.0
                 noise_grad_ratio = mean_noise / (mean_grad + 1e-12)
+                scaled_mean_noise = r_k * mean_noise
+                scaled_mean_grad = r_k * mean_grad
+                scaled_noise_grad_ratio = scaled_mean_noise / (scaled_mean_grad + 1e-12)
                 print(
                     'Client DP: noise L2={:.6f}, grad L2={:.6f}, noise/grad={:.6f}'.format(
                         mean_noise,
@@ -1449,6 +1463,19 @@ if __name__ == '__main__':
                     mean_noise,
                     mean_grad,
                     noise_grad_ratio,
+                )
+                print(
+                    'Client DP (scaled): noise L2={:.6f}, grad L2={:.6f}, noise/grad={:.6f}'.format(
+                        scaled_mean_noise,
+                        scaled_mean_grad,
+                        scaled_noise_grad_ratio,
+                    )
+                )
+                logger.info(
+                    'Client DP (scaled): noise L2=%.6f, grad L2=%.6f, noise/grad=%.6f',
+                    scaled_mean_noise,
+                    scaled_mean_grad,
+                    scaled_noise_grad_ratio,
                 )
                 with open(noise_csv_path, 'a', newline='') as f:
                     csv.writer(f).writerow([
