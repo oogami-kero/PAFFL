@@ -1425,6 +1425,13 @@ if __name__ == '__main__':
                         if key not in avg_delta:
                             avg_delta[key] = torch.zeros_like(val)
                         avg_delta[key] += val / num_clients  # uniform weighting; replace with counts if public
+                avg_delta_norm = (
+                    torch.norm(torch.cat([dw.view(-1) for dw in avg_delta.values()])).item()
+                    if avg_delta
+                    else 0.0
+                )
+                print(f'Aggregated update L2={avg_delta_norm:.6f}')
+                logger.info('Aggregated update L2=%.6f', avg_delta_norm)
                 noise_values = list(client_noise.values())
                 grad_values = list(client_grad.values())
                 mean_noise = float(np.mean(noise_values)) if noise_values else 0.0
