@@ -64,6 +64,7 @@ The repository now includes optional support for a **personalised transformation
   * `--dp_bootstrap`: bootstrap clip from the first round's median norm (default `True`)
   * `--dp_noise`: fixed noise multiplier (default) **or** `--dp_noise_scale` to scale noise with the clip via `sigma = scale * clip`
   * `--dp_delta`: target delta for privacy accounting (default `1e-5`)
+  * `--dp_accountant`: privacy accountant used to estimate ε (`rdp` default). Set to `prv` to use the PRV accountant, which requires installing [`prv_accountant`](https://github.com/microsoft/prv_accountant) (e.g. `pip install prv-accountant`).
   * `--print_eps`: output the current ε after each communication round when set to `1`
   * ε uses the minimum σ<sub>l</sub> across layers when noise multipliers differ
   * per-round noise statistics are written to `*_noise.csv`; `noise_std_rep` is the mean per-parameter noise standard deviation derived from the current layer clips and noise multipliers (after step scaling) and `noise_norm` is the total L2 norm of the sampled noise
