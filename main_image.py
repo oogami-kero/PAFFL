@@ -29,6 +29,7 @@ warnings.filterwarnings('ignore')
 layer_clips: dict[str, float] = {}
 scale_ema: dict[str, float] = {}
 norm_ema: dict[str, float] = {}
+moment2_ema: dict[str, float] = {}
 clip_min: dict[str, float] = {}
 log_clip: dict[str, float] = {}
 noise_multipliers: dict[str, float] = {}
@@ -888,27 +889,39 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                     for k in new_params
                     if 'few_classify' not in k and 'transform_layer' not in k
                 }
-                flat = torch.cat([v.view(-1) for v in delta.values()])
-                norm = torch.norm(flat).item()
-                scale = min(1.0, args.dp_clip / (norm + 1e-12))
-                flat = flat * scale
-                grad_norm = torch.norm(flat).item()
-                noise = torch.normal(
-                    0,
-                    args.dp_noise * args.dp_clip,
-                    size=flat.shape,
-                    device=flat.device,
-                )
-                noise_norm = torch.norm(noise).item()
-                flat = flat + noise
-                pointer = 0
-                for k, v in delta.items():
-                    numel = v.numel()
-                    delta[k] = flat[pointer:pointer + numel].view_as(v)
-                    pointer += numel
-                deltas[net_id] = delta
-                client_noise[net_id] = noise_norm
-                client_grad[net_id] = grad_norm
+                noised_delta: dict[str, torch.Tensor] = {}
+                grad_sq = 0.0
+                noise_sq = 0.0
+                for name, update in delta.items():
+                    if 'num_batches_tracked' in name:
+                        noised_delta[name] = update
+                        continue
+                    clip = layer_clips.get(name, args.dp_clip)
+                    clip = max(clip, 1e-12)
+                    norm = torch.norm(update).item()
+                    scale = min(1.0, clip / (norm + 1e-12))
+                    if scale < 1.0:
+                        logging.info(
+                            'Client %s param %s norm %.4f clip %.4f scale %.4f',
+                            net_id,
+                            name,
+                            norm,
+                            clip,
+                            scale,
+                        )
+                    clipped = update * scale
+                    grad_sq += clipped.pow(2).sum().item()
+                    sigma = noise_multipliers.get(name, args.dp_noise)
+                    noise_std = sigma if args.dp_constant_noise else sigma * clip
+                    if noise_std > 0:
+                        noise = torch.normal(0, noise_std, size=clipped.shape, device=clipped.device)
+                        noise_sq += noise.pow(2).sum().item()
+                    else:
+                        noise = torch.zeros_like(clipped)
+                    noised_delta[name] = clipped + noise
+                deltas[net_id] = noised_delta
+                client_noise[net_id] = math.sqrt(noise_sq)
+                client_grad[net_id] = math.sqrt(grad_sq)
         else:
             net.train()
             result, _, _, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
@@ -1277,6 +1290,14 @@ if __name__ == '__main__':
         for name in global_model.state_dict()
         if not any(e in name for e in EXEMPT_NAMES)
     })
+    moment2_ema.clear()
+    moment2_ema.update({name: layer_clips[name] ** 2 for name in layer_clips})
+    norm_ema.clear()
+    norm_ema.update({name: layer_clips[name] for name in layer_clips})
+    clip_min.clear()
+    clip_min.update({name: max(1e-4, args.dp_k_min * layer_clips[name]) for name in layer_clips})
+    log_clip.clear()
+    log_clip.update({name: math.log(layer_clips[name]) for name in layer_clips})
     noise_multipliers.clear()
     noise_multipliers.update({
         name: args.dp_noise
@@ -1450,13 +1471,25 @@ if __name__ == '__main__':
                     json.dump({k: float(v) for k, v in layer_clips.items()}, f, indent=2)
                 logging.info('layer_mean_scales: %s', layer_mean_scales)
             elif args.dp_mode == 'local':
-                avg_delta = {}
+                avg_delta: dict[str, torch.Tensor] = {}
+                per_layer_updates: dict[str, list[torch.Tensor]] = {}
                 num_clients = len(deltas)
                 for delta in deltas.values():
                     for key, val in delta.items():
                         if key not in avg_delta:
                             avg_delta[key] = torch.zeros_like(val)
-                        avg_delta[key] += val / num_clients  # uniform weighting; replace with counts if public
+                        avg_delta[key] += val / max(num_clients, 1)  # uniform weighting; replace with counts if public
+                        if any(token in key for token in (
+                            'running_mean',
+                            'running_var',
+                            'num_batches_tracked',
+                        )):
+                            continue
+                        if key.endswith('.bias') or '.bn' in key:
+                            continue
+                        if any(exempt in key for exempt in EXEMPT_NAMES):
+                            continue
+                        per_layer_updates.setdefault(key, []).append(val.detach())
                 avg_delta_norm = (
                     torch.norm(torch.cat([dw.view(-1) for dw in avg_delta.values()])).item()
                     if avg_delta
@@ -1509,6 +1542,57 @@ if __name__ == '__main__':
                     scaled_mean_grad,
                     scaled_noise_grad_ratio,
                 )
+                if per_layer_updates:
+                    decay = 0.9
+                    rms_values = []
+                    scale_values = []
+                    for name, updates in per_layer_updates.items():
+                        if not updates:
+                            continue
+                        sq_norms = [u.float().pow(2).sum().item() for u in updates]
+                        mean_sq_norm = float(np.mean(sq_norms))
+                        dim = updates[0].numel()
+                        sigma = noise_multipliers.get(name, args.dp_noise)
+                        clip = layer_clips.get(name, args.dp_clip)
+                        noise_std = sigma if args.dp_constant_noise else sigma * clip
+                        debiased_moment = max(mean_sq_norm - dim * (noise_std ** 2), 0.0)
+                        prev = moment2_ema.get(name, debiased_moment)
+                        moment2_ema[name] = decay * prev + (1 - decay) * debiased_moment
+                        rms = math.sqrt(moment2_ema[name])
+                        norm_ema[name] = rms
+                        clip_min[name] = max(1e-4, args.dp_k_min * rms)
+                        current_clip = layer_clips.get(name, args.dp_clip)
+                        scale_est = rms / max(current_clip, 1e-12)
+                        scale_prev = scale_ema.get(name, scale_est)
+                        scale_ema[name] = decay * scale_prev + (1 - decay) * scale_est
+                        rms_values.append(rms)
+                        scale_values.append(scale_ema[name])
+                    if (comm_round + 1) % args.dp_adapt_period == 0:
+                        for name in per_layer_updates:
+                            if name not in norm_ema:
+                                continue
+                            base = layer_clips.get(name, args.dp_clip)
+                            log_clip[name] = log_clip.get(name, math.log(base))
+                            adjustment = args.dp_target_mean_scale - scale_ema[name]
+                            log_clip[name] += args.dp_adapt_gain * adjustment
+                            lower = math.log(clip_min[name])
+                            upper = math.log(args.dp_clip_max)
+                            log_clip[name] = min(max(log_clip[name], lower), upper)
+                            layer_clips[name] = math.exp(log_clip[name])
+                    if rms_values:
+                        logging.info(
+                            'Local DP RMS norms mean=%.4f median=%.4f',
+                            float(np.mean(rms_values)),
+                            float(np.median(rms_values)),
+                        )
+                        logging.info(
+                            'Local DP norm ratios mean=%.4f median=%.4f',
+                            float(np.mean(scale_values)),
+                            float(np.median(scale_values)),
+                        )
+                    logging.info('layer_clips: %s', layer_clips)
+                    with open('layer_clips.json', 'w') as f:
+                        json.dump({k: float(v) for k, v in layer_clips.items()}, f, indent=2)
                 with open(noise_csv_path, 'a', newline='') as f:
                     csv.writer(f).writerow([
                         comm_round,
