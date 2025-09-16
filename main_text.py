@@ -859,12 +859,14 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 norm = torch.norm(flat).item()
                 scale = min(1.0, args.dp_clip / (norm + 1e-12))
                 flat = flat * scale
+                grad_norm = torch.norm(flat).item()
                 noise = torch.normal(
                     0,
                     args.dp_noise * args.dp_clip,
                     size=flat.shape,
                     device=flat.device,
                 )
+                noise_norm = torch.norm(noise).item()
                 flat = flat + noise
                 pointer = 0
                 for k, v in delta.items():
@@ -872,6 +874,8 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                     delta[k] = flat[pointer:pointer + numel].view_as(v)
                     pointer += numel
                 deltas[net_id] = delta
+                client_noise[net_id] = noise_norm
+                client_grad[net_id] = grad_norm
         else:
             net.train()
             result, _, _, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
@@ -913,7 +917,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     if args.dp_mode == 'server':
         return deltas, client_norms, client_scales, client_noise, client_grad, epsilon, avg_loss
     if args.dp_mode == 'local':
-        return deltas, epsilon, avg_loss
+        return deltas, client_noise, client_grad, epsilon, avg_loss
     return nets, epsilon, avg_loss
 
 
@@ -1176,6 +1180,8 @@ if __name__ == '__main__':
         header = ['round']
         if args.dp_mode == 'server':
             header.extend(['noise_std_rep', 'noise_norm'])
+        elif args.dp_mode == 'local':
+            header.extend(['mean_noise_l2', 'mean_grad_l2', 'noise_grad_ratio'])
         csv.writer(f).writerow(header)
 
     seed = args.init_seed
@@ -1333,7 +1339,7 @@ if __name__ == '__main__':
                     nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
             elif args.dp_mode == 'local':
-                deltas, _, round_loss = local_train_net_few_shot(
+                deltas, client_noise, client_grad, _, round_loss = local_train_net_few_shot(
                     nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
             else:
@@ -1419,6 +1425,31 @@ if __name__ == '__main__':
                         if key not in avg_delta:
                             avg_delta[key] = torch.zeros_like(val)
                         avg_delta[key] += val / num_clients  # uniform weighting; replace with counts if public
+                noise_values = list(client_noise.values())
+                grad_values = list(client_grad.values())
+                mean_noise = float(np.mean(noise_values)) if noise_values else 0.0
+                mean_grad = float(np.mean(grad_values)) if grad_values else 0.0
+                noise_grad_ratio = mean_noise / (mean_grad + 1e-12)
+                print(
+                    'Client DP: noise L2={:.6f}, grad L2={:.6f}, noise/grad={:.6f}'.format(
+                        mean_noise,
+                        mean_grad,
+                        noise_grad_ratio,
+                    )
+                )
+                logger.info(
+                    'Client DP: noise L2=%.6f, grad L2=%.6f, noise/grad=%.6f',
+                    mean_noise,
+                    mean_grad,
+                    noise_grad_ratio,
+                )
+                with open(noise_csv_path, 'a', newline='') as f:
+                    csv.writer(f).writerow([
+                        comm_round,
+                        f'{mean_noise:.6f}',
+                        f'{mean_grad:.6f}',
+                        f'{noise_grad_ratio:.6f}',
+                    ])
             else:
                 total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
                 fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in participating_ids]
