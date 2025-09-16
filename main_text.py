@@ -859,23 +859,11 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 norm = torch.norm(flat).item()
                 scale = min(1.0, args.dp_clip / (norm + 1e-12))
                 flat = flat * scale
-                grad_norm = torch.norm(flat).item()
                 noise = torch.normal(
                     0,
                     args.dp_noise * args.dp_clip,
                     size=flat.shape,
                     device=flat.device,
-                )
-                noise_norm = torch.norm(noise).item()
-                ratio = noise_norm / (grad_norm + 1e-12)
-                print(
-                    f'Client DP: noise L2={noise_norm:.3e}, grad L2={grad_norm:.3e}, noise/grad={ratio:.3e}'
-                )
-                logging.info(
-                    'Client DP: noise L2=%.3e, grad L2=%.3e, noise/grad=%.3e',
-                    noise_norm,
-                    grad_norm,
-                    ratio
                 )
                 flat = flat + noise
                 pointer = 0
@@ -884,8 +872,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                     delta[k] = flat[pointer:pointer + numel].view_as(v)
                     pointer += numel
                 deltas[net_id] = delta
-                client_noise[net_id] = noise_norm
-                client_grad[net_id] = grad_norm
         else:
             net.train()
             result, _, _, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
