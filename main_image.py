@@ -1540,15 +1540,29 @@ if __name__ == '__main__':
                     sampling_rate=len(participating_ids) / args.n_parties,
                 )
             elif args.dp_mode == 'local':
-                orders = range(2, 257)
-                sig = args.dp_noise
-                delta = args.dp_delta
-                epsilons = []
-                for m in user_rounds.values():
-                    epsilons.append(
-                        min(m * a / (2 * sig ** 2) + math.log(1 / delta) / (a - 1) for a in orders)
-                    )
-                epsilon = max(epsilons) if epsilons else 0.0
+                if args.dp_accountant != 'prv':
+                    orders = range(2, 257)
+                    sig = args.dp_noise
+                    delta = args.dp_delta
+                    epsilons = []
+                    for m in user_rounds.values():
+                        epsilons.append(
+                            min(m * a / (2 * sig ** 2) + math.log(1 / delta) / (a - 1) for a in orders)
+                        )
+                    epsilon = max(epsilons) if epsilons else 0.0
+                else:
+                    epsilons = []
+                    for m in user_rounds.values():
+                        epsilons.append(
+                            dp_utils.compute_epsilon(
+                                m,
+                                args.dp_noise,
+                                args.dp_delta,
+                                accountant='prv',
+                                sampling_rate=1.0,
+                            )
+                        )
+                    epsilon = max(epsilons) if epsilons else 0.0
             if args.server_momentum and args.dp_mode != 'server':
                 if args.dp_mode == 'local':
                     delta_w = {k: v for k, v in avg_delta.items() if k in moment_v}
