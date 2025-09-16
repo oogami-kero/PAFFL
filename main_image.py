@@ -1546,18 +1546,25 @@ if __name__ == '__main__':
                     decay = 0.9
                     rms_values = []
                     scale_values = []
+                    C_prev = math.sqrt(sum(c**2 for c in layer_clips.values()))
                     for name, updates in per_layer_updates.items():
                         if not updates:
                             continue
-                        sq_norms = [u.float().pow(2).sum().item() for u in updates]
-                        mean_sq_norm = float(np.mean(sq_norms))
+                        sq_norms = sorted(u.float().pow(2).sum().item() for u in updates)
+                        if not sq_norms:
+                            continue
+                        k = max(int(0.1 * len(sq_norms)), 0)
+                        if len(sq_norms) > 2 * k:
+                            trimmed = sq_norms[k:len(sq_norms) - k]
+                        else:
+                            trimmed = sq_norms
+                        trimmed_mean = float(np.mean(trimmed)) if trimmed else 0.0
                         dim = updates[0].numel()
-                        sigma = noise_multipliers.get(name, args.dp_noise)
-                        clip = layer_clips.get(name, args.dp_clip)
-                        noise_std = sigma if args.dp_constant_noise else sigma * clip
-                        debiased_moment = max(mean_sq_norm - dim * (noise_std ** 2), 0.0)
-                        prev = moment2_ema.get(name, debiased_moment)
-                        moment2_ema[name] = decay * prev + (1 - decay) * debiased_moment
+                        noise_var = (args.dp_noise * C_prev) ** 2
+                        debiased = max(trimmed_mean - dim * noise_var, 0.0)
+                        prev = moment2_ema.get(name, debiased)
+                        debiased = 0.7 * debiased + 0.3 * prev
+                        moment2_ema[name] = decay * prev + (1 - decay) * debiased
                         rms = math.sqrt(moment2_ema[name])
                         norm_ema[name] = rms
                         clip_min[name] = max(1e-4, args.dp_k_min * rms)
