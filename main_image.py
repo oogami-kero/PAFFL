@@ -1608,9 +1608,7 @@ if __name__ == '__main__':
                 noise_rss = math.sqrt(sum(v ** 2 for v in noise_values)) if noise_values else 0.0
                 grad_rss = math.sqrt(sum(v ** 2 for v in grad_values)) if grad_values else 0.0
                 aggregated_noise = noise_rss / client_count
-                signal_sq = max(avg_delta_norm ** 2 - aggregated_noise ** 2, 0.0)
-                aggregated_grad = math.sqrt(signal_sq)
-                per_client_grad_rms = grad_rss / client_count if grad_values else 0.0
+                aggregated_grad = grad_rss / client_count
                 aggregated_noise_grad_ratio = aggregated_noise / (aggregated_grad + 1e-12)
                 scaled_aggregated_noise = r_k * aggregated_noise
                 scaled_aggregated_grad = r_k * aggregated_grad
@@ -1641,9 +1639,6 @@ if __name__ == '__main__':
                     scaled_aggregated_grad,
                     scaled_aggregated_noise_grad_ratio,
                 )
-                if grad_values:
-                    print('Client DP diagnostic: per-client grad RMS L2={:.6f}'.format(per_client_grad_rms))
-                    logger.info('Client DP diagnostic: per-client grad RMS L2=%.6f', per_client_grad_rms)
                 if per_layer_updates:
                     decay = 0.9
                     rms_values = []
