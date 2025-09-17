@@ -742,14 +742,20 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     ##################################
                     del net_new, X_out_query, out
     
-                acc_train = (torch.argmax(out_all, -1) == y_total).float().mean().item()
+                with torch.no_grad():
+                    global_predictions = torch.argmax(out_all, dim=-1)
+                    global_acc = (global_predictions == y_total).float().mean().item()
+                    episode_logits = out_all[N * K:, transformed_class_list]
+                    episode_predictions = torch.argmax(episode_logits, dim=-1)
+                    episode_acc = (episode_predictions == query_labels).float().mean().item()
+                acc_train = episode_acc
 
                 del X_out_all,  out_all
                 if dp_scheduler is not None:
                     dp_scheduler.step()
                 if head_scheduler is not None:
                     head_scheduler.step()
-                return acc_train
+                return acc_train, global_acc
     
             else:
                 use_logistic = True
@@ -806,11 +812,20 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         if not test_only:
             best_acc = 0
             accs_train = []
+            global_accs_train = []
             for epoch in range(args.num_train_tasks):
-                accs_train.append(train_epoch(epoch))
+                episode_acc, global_acc = train_epoch(epoch)
+                accs_train.append(episode_acc)
+                global_accs_train.append(global_acc)
                 if np.random.rand() < 0.05:
-                    logger.info('Meta-train_Accuracy: {:.4f}'.format(np.mean(accs_train)))
-                    print('Meta-train_Accuracy: {:.4f}'.format(np.mean(accs_train)))
+                    mean_global_acc = np.mean(global_accs_train)
+                    mean_episode_acc = np.mean(accs_train)
+                    message = 'Meta-train accuracy | global: {:.4f} | N-way: {:.4f}'.format(
+                        mean_global_acc,
+                        mean_episode_acc,
+                    )
+                    logger.info(message)
+                    print(message)
 
             accs = []
             for epoch_test in range(args.num_test_tasks):
