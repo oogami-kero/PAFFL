@@ -1306,7 +1306,14 @@ if __name__ == '__main__':
         if args.dp_mode == 'server':
             header.extend(['noise_std_rep', 'noise_norm'])
         elif args.dp_mode == 'local':
-            header.extend(['mean_noise_l2', 'mean_grad_l2', 'noise_grad_ratio'])
+            header.extend([
+                'aggregated_noise_l2',
+                'aggregated_grad_l2',
+                'aggregated_noise_grad_ratio',
+                'scaled_aggregated_noise_l2',
+                'scaled_aggregated_grad_l2',
+                'scaled_aggregated_noise_grad_ratio',
+            ])
         csv.writer(f).writerow(header)
 
     seed = args.init_seed
@@ -1595,39 +1602,42 @@ if __name__ == '__main__':
                 logger.info('Aggregated update L2 (pre-scale)=%.6f', avg_delta_norm)
                 print(f'Local step L2={step_norm:.6f}, r_k={r_k:.4f} ({cap_state})')
                 logger.info('Local step L2=%.6f, r_k=%.4f (%s)', step_norm, r_k, cap_state)
-                noise_values = list(client_noise.values())
-                grad_values = list(client_grad.values())
-                mean_noise = float(np.mean(noise_values)) if noise_values else 0.0
-                mean_grad = float(np.mean(grad_values)) if grad_values else 0.0
-                noise_grad_ratio = mean_noise / (mean_grad + 1e-12)
-                scaled_mean_noise = r_k * mean_noise
-                scaled_mean_grad = r_k * mean_grad
-                scaled_noise_grad_ratio = scaled_mean_noise / (scaled_mean_grad + 1e-12)
+                noise_values = [float(v) for v in client_noise.values()]
+                grad_values = [float(v) for v in client_grad.values()]
+                client_count = max(num_clients, 1)
+                noise_rss = math.sqrt(sum(v ** 2 for v in noise_values)) if noise_values else 0.0
+                grad_rss = math.sqrt(sum(v ** 2 for v in grad_values)) if grad_values else 0.0
+                aggregated_noise = noise_rss / client_count
+                aggregated_grad = grad_rss / client_count
+                aggregated_noise_grad_ratio = aggregated_noise / (aggregated_grad + 1e-12)
+                scaled_aggregated_noise = r_k * aggregated_noise
+                scaled_aggregated_grad = r_k * aggregated_grad
+                scaled_aggregated_noise_grad_ratio = scaled_aggregated_noise / (scaled_aggregated_grad + 1e-12)
                 print(
                     'Client DP: noise L2={:.6f}, grad L2={:.6f}, noise/grad={:.6f}'.format(
-                        mean_noise,
-                        mean_grad,
-                        noise_grad_ratio,
+                        aggregated_noise,
+                        aggregated_grad,
+                        aggregated_noise_grad_ratio,
                     )
                 )
                 logger.info(
                     'Client DP: noise L2=%.6f, grad L2=%.6f, noise/grad=%.6f',
-                    mean_noise,
-                    mean_grad,
-                    noise_grad_ratio,
+                    aggregated_noise,
+                    aggregated_grad,
+                    aggregated_noise_grad_ratio,
                 )
                 print(
                     'Client DP (scaled): noise L2={:.6f}, grad L2={:.6f}, noise/grad={:.6f}'.format(
-                        scaled_mean_noise,
-                        scaled_mean_grad,
-                        scaled_noise_grad_ratio,
+                        scaled_aggregated_noise,
+                        scaled_aggregated_grad,
+                        scaled_aggregated_noise_grad_ratio,
                     )
                 )
                 logger.info(
                     'Client DP (scaled): noise L2=%.6f, grad L2=%.6f, noise/grad=%.6f',
-                    scaled_mean_noise,
-                    scaled_mean_grad,
-                    scaled_noise_grad_ratio,
+                    scaled_aggregated_noise,
+                    scaled_aggregated_grad,
+                    scaled_aggregated_noise_grad_ratio,
                 )
                 if per_layer_updates:
                     decay = 0.9
@@ -1702,9 +1712,12 @@ if __name__ == '__main__':
                 with open(noise_csv_path, 'a', newline='') as f:
                     csv.writer(f).writerow([
                         comm_round,
-                        f'{mean_noise:.6f}',
-                        f'{mean_grad:.6f}',
-                        f'{noise_grad_ratio:.6f}',
+                        f'{aggregated_noise:.6f}',
+                        f'{aggregated_grad:.6f}',
+                        f'{aggregated_noise_grad_ratio:.6f}',
+                        f'{scaled_aggregated_noise:.6f}',
+                        f'{scaled_aggregated_grad:.6f}',
+                        f'{scaled_aggregated_noise_grad_ratio:.6f}',
                     ])
             else:
                 total_data_points = sum(len(net_dataidx_map[r]) for r in participating_ids)
