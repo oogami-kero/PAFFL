@@ -939,15 +939,21 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                 client_scales[net_id] = scale
             elif args.dp_mode == 'local':
                 new_params = net.state_dict()
+                exempt_param_count = sum(
+                    1 for name in new_params if any(exempt in name for exempt in EXEMPT_NAMES)
+                )
                 delta = {
                     k: new_params[k] - prev_params[k]
                     for k in new_params
-                    if 'few_classify' not in k and 'transform_layer' not in k
+                    if not any(exempt in k for exempt in EXEMPT_NAMES)
                 }
                 noised_delta: dict[str, torch.Tensor] = {}
                 grad_sq = 0.0
                 noise_sq = 0.0
+                protected_params = 0
                 for name, update in delta.items():
+                    if any(exempt in name for exempt in EXEMPT_NAMES):
+                        continue
                     if 'num_batches_tracked' in name:
                         noised_delta[name] = update
                         continue
@@ -974,9 +980,17 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                     else:
                         noise = torch.zeros_like(clipped)
                     noised_delta[name] = clipped + noise
+                    protected_params += 1
                 deltas[net_id] = noised_delta
                 client_noise[net_id] = math.sqrt(noise_sq)
                 client_grad[net_id] = math.sqrt(grad_sq)
+                logging.info(
+                    'Client %s local DP noise L2=%.6f over %d tensors (skipped %d exempt)',
+                    net_id,
+                    client_noise[net_id],
+                    protected_params,
+                    exempt_param_count,
+                )
         else:
             net.train()
             result, _, _, _, _ = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client, y_train_client, X_test, y_test,
