@@ -1375,8 +1375,9 @@ if __name__ == '__main__':
     layer_clips.clear()
     layer_clips.update({
         name: args.dp_clip
-        for name in global_model.state_dict()
+        for name, tensor in global_model.state_dict().items()
         if not any(e in name for e in EXEMPT_NAMES)
+        and not _is_bn_or_bias(name, tensor)
     })
     sentinel_layers.clear()
     sentinel_layers.update(determine_sentinel_layers(layer_clips))
@@ -1578,6 +1579,8 @@ if __name__ == '__main__':
                     for key, val in delta.items():
                         if any(exempt in key for exempt in EXEMPT_NAMES):
                             continue
+                        if _is_bn_or_bias(key, val):
+                            continue
                         if key not in avg_delta:
                             avg_delta[key] = torch.zeros_like(val)
                         avg_delta[key] += val / max(num_clients, 1)
@@ -1587,15 +1590,21 @@ if __name__ == '__main__':
                             'num_batches_tracked',
                         )):
                             continue
-                        if key.endswith('.bias') or '.bn' in key:
-                            continue
                 for delta in clipped_updates.values():
                     for key, val in delta.items():
                         if any(exempt in key for exempt in EXEMPT_NAMES):
                             continue
+                        if _is_bn_or_bias(key, val):
+                            continue
                         if key not in avg_clipped:
                             avg_clipped[key] = torch.zeros_like(val)
                         avg_clipped[key] += val / max(num_clients, 1)
+                        if any(token in key for token in (
+                            'running_mean',
+                            'running_var',
+                            'num_batches_tracked',
+                        )):
+                            continue
                         per_layer_updates.setdefault(key, []).append(val.detach())
                 avg_delta_norm = (
                     torch.norm(torch.cat([dw.view(-1) for dw in avg_delta.values()])).item()
@@ -1829,6 +1838,8 @@ if __name__ == '__main__':
             elif args.dp_mode == 'local' and old_w is not None:
                 for key, dw in avg_delta.items():
                     if any(exempt in key for exempt in EXEMPT_NAMES):
+                        continue
+                    if _is_bn_or_bias(key, dw):
                         continue
                     global_w[key] = old_w[key] + dw
 
