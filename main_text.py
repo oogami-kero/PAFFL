@@ -1564,7 +1564,6 @@ if __name__ == '__main__':
                     decay = 0.9
                     rms_values = []
                     scale_values = []
-                    C_prev = math.sqrt(sum(c**2 for c in layer_clips.values()))
                     for name, updates in per_layer_updates.items():
                         if not updates:
                             continue
@@ -1578,7 +1577,10 @@ if __name__ == '__main__':
                             trimmed = sq_norms
                         trimmed_mean = float(np.mean(trimmed)) if trimmed else 0.0
                         dim = updates[0].numel()
-                        noise_var = (args.dp_noise * C_prev) ** 2
+                        current_clip = layer_clips.get(name, args.dp_clip)
+                        sigma = noise_multipliers.get(name, args.dp_noise)
+                        noise_std = sigma if args.dp_constant_noise else sigma * current_clip
+                        noise_var = noise_std ** 2
                         debiased = max(trimmed_mean - dim * noise_var, 0.0)
                         prev = moment2_ema.get(name, debiased)
                         debiased = 0.7 * debiased + 0.3 * prev
@@ -1586,7 +1588,6 @@ if __name__ == '__main__':
                         rms = math.sqrt(moment2_ema[name])
                         norm_ema[name] = rms
                         clip_min[name] = max(1e-4, args.dp_k_min * rms)
-                        current_clip = layer_clips.get(name, args.dp_clip)
                         scale_est = rms / max(current_clip, 1e-12)
                         scale_prev = scale_ema.get(name, scale_est)
                         scale_ema[name] = decay * scale_prev + (1 - decay) * scale_est
