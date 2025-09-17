@@ -1764,6 +1764,8 @@ if __name__ == '__main__':
                                 continue
                             global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
+            round_sampling_rate = len(participating_ids) / max(args.n_parties, 1)
+
             if args.dp_mode == 'server':
                 noise_std_rep = aggregate_noise_std(
                     layer_clips, noise_multipliers, len(participating_ids), args.dp_noise, args.dp_constant_noise
@@ -1794,32 +1796,21 @@ if __name__ == '__main__':
                     nominal_sigma,
                     args.dp_delta,
                     accountant=args.dp_accountant,
-                    sampling_rate=len(participating_ids) / args.n_parties,
+                    sampling_rate=round_sampling_rate,
                 )
             elif args.dp_mode == 'local':
-                if args.dp_accountant != 'prv':
-                    orders = range(2, 257)
-                    sig = args.dp_noise
-                    delta = args.dp_delta
-                    epsilons = []
-                    for m in user_rounds.values():
-                        epsilons.append(
-                            min(m * a / (2 * sig ** 2) + math.log(1 / delta) / (a - 1) for a in orders)
+                epsilons = []
+                for m in user_rounds.values():
+                    epsilons.append(
+                        dp_utils.compute_epsilon(
+                            m,
+                            args.dp_noise,
+                            args.dp_delta,
+                            accountant=args.dp_accountant,
+                            sampling_rate=round_sampling_rate,
                         )
-                    epsilon = max(epsilons) if epsilons else 0.0
-                else:
-                    epsilons = []
-                    for m in user_rounds.values():
-                        epsilons.append(
-                            dp_utils.compute_epsilon(
-                                m,
-                                args.dp_noise,
-                                args.dp_delta,
-                                accountant='prv',
-                                sampling_rate=1.0,
-                            )
-                        )
-                    epsilon = max(epsilons) if epsilons else 0.0
+                    )
+                epsilon = max(epsilons) if epsilons else 0.0
             if args.server_momentum and args.dp_mode != 'server':
                 if args.dp_mode == 'local':
                     delta_w = {k: v for k, v in avg_delta.items() if k in moment_v}
