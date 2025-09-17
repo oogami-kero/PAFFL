@@ -46,6 +46,11 @@ EXEMPT_NAMES = ('transformer', 'few_classify', 'transform_layer')
 REFERENCE_SHOT = 5
 
 
+def _is_bn_or_bias(name: str, tensor: torch.Tensor) -> bool:
+    """Return ``True`` when ``tensor`` belongs to a BatchNorm weight/bias."""
+    return '.bn' in name or name.endswith('.bias') or tensor.dim() == 1
+
+
 def clamp(value: int, min_value: int, max_value: int) -> int:
     """Clamp value within the inclusive range [min_value, max_value]."""
     return max(min_value, min(value, max_value))
@@ -957,6 +962,12 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                     if 'num_batches_tracked' in name:
                         noised_delta[name] = update
                         continue
+                    if any(token in name for token in ('running_mean', 'running_var')):
+                        noised_delta[name] = update
+                        continue
+                    if _is_bn_or_bias(name, update):
+                        noised_delta[name] = update
+                        continue
                     clip = layer_clips.get(name, args.dp_clip)
                     clip = max(clip, 1e-12)
                     norm = torch.norm(update).item()
@@ -1065,9 +1076,6 @@ def aggregate_deltas(
         avg_updates, mean_norm, median_norm, mean_scale,
         layer_mean_scales, layer_mean_norms, r_k, noise_norm
     """
-
-    def _is_bn_or_bias(name: str, tensor: torch.Tensor) -> bool:
-        return '.bn' in name or name.endswith('.bias') or tensor.dim() == 1
 
     clipped = []
     scales = []
