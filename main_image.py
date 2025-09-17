@@ -1433,8 +1433,9 @@ if __name__ == '__main__':
             party_list_this_round = party_list_rounds[comm_round]
 
             global_w = global_model.state_dict()
-            if args.server_momentum and args.dp_mode != 'server':
-                old_w = copy.deepcopy(global_model.state_dict())
+            old_w = None
+            if args.dp_mode != 'server':
+                old_w = copy.deepcopy(global_w)
 
             nets_this_round = {k: nets[k] for k in party_list_this_round}
             participating_ids = list(nets_this_round.keys())
@@ -1809,7 +1810,7 @@ if __name__ == '__main__':
                 eta_eff = min(args.server_lr, eta_cap)
                 for key, v in moment_v.items():
                     global_w[key] = old_w[key] + eta_eff * v
-            elif args.dp_mode == 'local':
+            elif args.dp_mode == 'local' and old_w is not None:
                 for key, dw in avg_delta.items():
                     if any(exempt in key for exempt in EXEMPT_NAMES):
                         continue

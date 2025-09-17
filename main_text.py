@@ -1355,8 +1355,9 @@ if __name__ == '__main__':
 
 
             global_w = global_model.state_dict()
-            if args.server_momentum and args.dp_mode != 'server':
-                old_w = copy.deepcopy(global_model.state_dict())
+            old_w = None
+            if args.dp_mode != 'server':
+                old_w = copy.deepcopy(global_w)
 
             nets_this_round = {k: nets[k] for k in party_list_this_round}
             participating_ids = list(nets_this_round.keys())
@@ -1710,14 +1711,12 @@ if __name__ == '__main__':
                     epsilon = max(epsilons) if epsilons else 0.0
             if args.server_momentum and args.dp_mode != 'server':
                 if args.dp_mode == 'local':
-                    delta_w = avg_delta
+                    delta_w = {k: v for k, v in avg_delta.items() if k in moment_v}
                 else:
-                    delta_w = copy.deepcopy(global_w)
-                    for key in delta_w:
-                        delta_w[key] = global_w[key] - old_w[key]
-                for key in delta_w:
-                    moment_v[key] = args.server_momentum * moment_v[key] + (1 - args.server_momentum) * delta_w[key]
-            elif args.dp_mode == 'local':
+                    delta_w = {k: global_w[k] - old_w[k] for k in moment_v}
+                for key, dw in delta_w.items():
+                    moment_v[key] = args.server_momentum * moment_v[key] + (1 - args.server_momentum) * dw
+            elif args.dp_mode == 'local' and old_w is not None:
                 for key, dw in avg_delta.items():
                     global_w[key] = old_w[key] + dw
                 unscaled_moment_norm = 0.0
