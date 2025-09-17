@@ -833,7 +833,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     client_scales = {}
     client_noise = {}
     client_grad = {}
-    clipped_updates: dict[str, dict[str, torch.Tensor]] = {}
     if args.dp_mode == 'server' and not hasattr(args, 'client_grad_norms'):
         args.client_grad_norms = {}
     grad_ma_decay = 0.9
@@ -898,7 +897,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                     if 'few_classify' not in k and 'transform_layer' not in k
                 }
                 noised_delta: dict[str, torch.Tensor] = {}
-                client_clipped: dict[str, torch.Tensor] = {}
                 grad_sq = 0.0
                 noise_sq = 0.0
                 for name, update in delta.items():
@@ -919,7 +917,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                             scale,
                         )
                     clipped = update * scale
-                    client_clipped[name] = clipped.detach()
                     grad_sq += clipped.pow(2).sum().item()
                     sigma = noise_multipliers.get(name, args.dp_noise)
                     noise_std = sigma if args.dp_constant_noise else sigma * clip
@@ -930,7 +927,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
                         noise = torch.zeros_like(clipped)
                     noised_delta[name] = clipped + noise
                 deltas[net_id] = noised_delta
-                clipped_updates[net_id] = client_clipped
                 client_noise[net_id] = math.sqrt(noise_sq)
                 client_grad[net_id] = math.sqrt(grad_sq)
         else:
@@ -974,7 +970,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     if args.dp_mode == 'server':
         return deltas, client_norms, client_scales, client_noise, client_grad, epsilon, avg_loss
     if args.dp_mode == 'local':
-        return deltas, clipped_updates, client_noise, client_grad, epsilon, avg_loss
+        return deltas, client_noise, client_grad, epsilon, avg_loss
     return nets, epsilon, avg_loss
 
 
@@ -1238,7 +1234,7 @@ if __name__ == '__main__':
         if args.dp_mode == 'server':
             header.extend(['noise_std_rep', 'noise_norm'])
         elif args.dp_mode == 'local':
-            header.extend(['mean_noise_l2', 'aggregated_grad_l2', 'noise_grad_ratio'])
+            header.extend(['mean_noise_l2', 'mean_grad_l2', 'noise_grad_ratio'])
         csv.writer(f).writerow(header)
 
     seed = args.init_seed
@@ -1411,7 +1407,7 @@ if __name__ == '__main__':
                     nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
             elif args.dp_mode == 'local':
-                deltas, clipped_updates, client_noise, client_grad, _, round_loss = local_train_net_few_shot(
+                deltas, client_noise, client_grad, _, round_loss = local_train_net_few_shot(
                     nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device
                 )
             else:
@@ -1495,19 +1491,13 @@ if __name__ == '__main__':
                 logging.info('layer_mean_scales: %s', layer_mean_scales)
             elif args.dp_mode == 'local':
                 avg_delta: dict[str, torch.Tensor] = {}
-                avg_clipped: dict[str, torch.Tensor] = {}
                 per_layer_updates: dict[str, list[torch.Tensor]] = {}
                 num_clients = len(deltas)
                 for delta in deltas.values():
                     for key, val in delta.items():
                         if key not in avg_delta:
                             avg_delta[key] = torch.zeros_like(val)
-                        avg_delta[key] += val / max(num_clients, 1)
-                for delta in clipped_updates.values():
-                    for key, val in delta.items():
-                        if key not in avg_clipped:
-                            avg_clipped[key] = torch.zeros_like(val)
-                        avg_clipped[key] += val / max(num_clients, 1)
+                        avg_delta[key] += val / max(num_clients, 1)  # uniform weighting; replace with counts if public
                         if any(token in key for token in (
                             'running_mean',
                             'running_var',
@@ -1524,11 +1514,6 @@ if __name__ == '__main__':
                     if avg_delta
                     else 0.0
                 )
-                aggregated_grad = (
-                    torch.norm(torch.cat([dw.view(-1) for dw in avg_clipped.values()])).item()
-                    if avg_clipped
-                    else 0.0
-                )
                 r_k = min(1.0, args.target_step / max(avg_delta_norm, 1e-12))
                 for key in avg_delta:
                     avg_delta[key] = avg_delta[key] * r_k
@@ -1540,40 +1525,40 @@ if __name__ == '__main__':
                 cap_state = 'cap=ON' if r_k < 1.0 else 'cap=off'
                 print(f'Aggregated update L2 (pre-scale)={avg_delta_norm:.6f}')
                 logger.info('Aggregated update L2 (pre-scale)=%.6f', avg_delta_norm)
-                print(f'Aggregated clipped grad L2={aggregated_grad:.6f}')
-                logger.info('Aggregated clipped grad L2=%.6f', aggregated_grad)
                 print(f'Local step L2={step_norm:.6f}, r_k={r_k:.4f} ({cap_state})')
                 logger.info('Local step L2=%.6f, r_k=%.4f (%s)', step_norm, r_k, cap_state)
                 noise_values = list(client_noise.values())
+                grad_values = list(client_grad.values())
                 mean_noise = float(np.mean(noise_values)) if noise_values else 0.0
-                noise_grad_ratio = mean_noise / (aggregated_grad + 1e-12)
+                mean_grad = float(np.mean(grad_values)) if grad_values else 0.0
+                noise_grad_ratio = mean_noise / (mean_grad + 1e-12)
                 scaled_mean_noise = r_k * mean_noise
-                scaled_aggregated_grad = r_k * aggregated_grad
-                scaled_noise_grad_ratio = scaled_mean_noise / (scaled_aggregated_grad + 1e-12)
+                scaled_mean_grad = r_k * mean_grad
+                scaled_noise_grad_ratio = scaled_mean_noise / (scaled_mean_grad + 1e-12)
                 print(
                     'Client DP: noise L2={:.6f}, grad L2={:.6f}, noise/grad={:.6f}'.format(
                         mean_noise,
-                        aggregated_grad,
+                        mean_grad,
                         noise_grad_ratio,
                     )
                 )
                 logger.info(
                     'Client DP: noise L2=%.6f, grad L2=%.6f, noise/grad=%.6f',
                     mean_noise,
-                    aggregated_grad,
+                    mean_grad,
                     noise_grad_ratio,
                 )
                 print(
                     'Client DP (scaled): noise L2={:.6f}, grad L2={:.6f}, noise/grad={:.6f}'.format(
                         scaled_mean_noise,
-                        scaled_aggregated_grad,
+                        scaled_mean_grad,
                         scaled_noise_grad_ratio,
                     )
                 )
                 logger.info(
                     'Client DP (scaled): noise L2=%.6f, grad L2=%.6f, noise/grad=%.6f',
                     scaled_mean_noise,
-                    scaled_aggregated_grad,
+                    scaled_mean_grad,
                     scaled_noise_grad_ratio,
                 )
                 if per_layer_updates:
@@ -1651,7 +1636,7 @@ if __name__ == '__main__':
                     csv.writer(f).writerow([
                         comm_round,
                         f'{mean_noise:.6f}',
-                        f'{aggregated_grad:.6f}',
+                        f'{mean_grad:.6f}',
                         f'{noise_grad_ratio:.6f}',
                     ])
             else:
