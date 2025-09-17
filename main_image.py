@@ -1541,6 +1541,8 @@ if __name__ == '__main__':
                 num_clients = len(deltas)
                 for delta in deltas.values():
                     for key, val in delta.items():
+                        if any(exempt in key for exempt in EXEMPT_NAMES):
+                            continue
                         if key not in avg_delta:
                             avg_delta[key] = torch.zeros_like(val)
                         avg_delta[key] += val / max(num_clients, 1)  # uniform weighting; replace with counts if public
@@ -1551,8 +1553,6 @@ if __name__ == '__main__':
                         )):
                             continue
                         if key.endswith('.bias') or '.bn' in key:
-                            continue
-                        if any(exempt in key for exempt in EXEMPT_NAMES):
                             continue
                         per_layer_updates.setdefault(key, []).append(val.detach())
                 avg_delta_norm = (
@@ -1775,6 +1775,8 @@ if __name__ == '__main__':
                     global_w[key] = old_w[key] + eta_eff * v
             elif args.dp_mode == 'local':
                 for key, dw in avg_delta.items():
+                    if any(exempt in key for exempt in EXEMPT_NAMES):
+                        continue
                     global_w[key] = old_w[key] + dw
 
             global_model.load_state_dict(global_w)
