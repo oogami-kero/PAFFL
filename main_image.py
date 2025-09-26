@@ -1444,6 +1444,7 @@ if __name__ == '__main__':
 
             nets_this_round = {k: nets[k] for k in party_list_this_round}
             participating_ids = list(nets_this_round.keys())
+            round_sampling_rate = len(participating_ids) / max(args.n_parties, 1)
             for pid in participating_ids:
                 user_rounds[pid] += 1
 
@@ -1764,8 +1765,6 @@ if __name__ == '__main__':
                                 continue
                             global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
-            round_sampling_rate = len(participating_ids) / max(args.n_parties, 1)
-
             if args.dp_mode == 'server':
                 noise_std_rep = aggregate_noise_std(
                     layer_clips, noise_multipliers, len(participating_ids), args.dp_noise, args.dp_constant_noise
@@ -1799,17 +1798,16 @@ if __name__ == '__main__':
                     sampling_rate=round_sampling_rate,
                 )
             elif args.dp_mode == 'local':
-                epsilons = []
-                for m in user_rounds.values():
-                    epsilons.append(
-                        dp_utils.compute_epsilon(
-                            m,
-                            args.dp_noise,
-                            args.dp_delta,
-                            accountant=args.dp_accountant,
-                            sampling_rate=round_sampling_rate,
-                        )
+                epsilons = [
+                    dp_utils.compute_epsilon(
+                        m,
+                        args.dp_noise,
+                        args.dp_delta,
+                        accountant=args.dp_accountant,
+                        sampling_rate=round_sampling_rate,
                     )
+                    for m in user_rounds.values()
+                ]
                 epsilon = max(epsilons) if epsilons else 0.0
             if args.server_momentum and args.dp_mode != 'server':
                 if args.dp_mode == 'local':
