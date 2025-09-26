@@ -1581,6 +1581,7 @@ if __name__ == '__main__':
                 avg_delta: dict[str, torch.Tensor] = {}
                 avg_clipped: dict[str, torch.Tensor] = {}
                 per_layer_updates: dict[str, list[torch.Tensor]] = {}
+                per_layer_noised: dict[str, list[torch.Tensor]] = {}
                 num_clients = len(deltas)
                 for delta in deltas.values():
                     for key, val in delta.items():
@@ -1595,6 +1596,7 @@ if __name__ == '__main__':
                             'num_batches_tracked',
                         )):
                             continue
+                        per_layer_noised.setdefault(key, []).append(val.detach())
                 for delta in clipped_updates.values():
                     for key, val in delta.items():
                         if _should_skip_from_dp(key, val):
@@ -1684,15 +1686,24 @@ if __name__ == '__main__':
                         else:
                             trimmed = sq_norms
                         trimmed_mean = float(np.mean(trimmed)) if trimmed else 0.0
-                        dim = updates[0].numel()
                         current_clip = layer_clips.get(name, args.dp_clip)
-                        sigma = noise_multipliers.get(name, args.dp_noise)
-                        noise_std = sigma if args.dp_constant_noise else sigma * current_clip
-                        noise_var = noise_std ** 2
-                        debiased = max(trimmed_mean - dim * noise_var, 0.0)
-                        prev = moment2_ema.get(name, debiased)
-                        debiased = 0.7 * debiased + 0.3 * prev
-                        moment2_ema[name] = decay * prev + (1 - decay) * debiased
+                        moment2 = trimmed_mean
+                        noised_updates = per_layer_noised.get(name)
+                        noised_trimmed_mean = float('nan')
+                        if noised_updates:
+                            noised_sq_norms = sorted(u.float().pow(2).sum().item() for u in noised_updates)
+                            if noised_sq_norms:
+                                k_noised = max(int(0.1 * len(noised_sq_norms)), 0)
+                                if len(noised_sq_norms) > 2 * k_noised:
+                                    trimmed_noised = noised_sq_norms[k_noised:len(noised_sq_norms) - k_noised]
+                                else:
+                                    trimmed_noised = noised_sq_norms
+                                noised_trimmed_mean = float(np.mean(trimmed_noised)) if trimmed_noised else 0.0
+                            else:
+                                noised_trimmed_mean = 0.0
+                        prev = moment2_ema.get(name, moment2)
+                        blended = 0.7 * moment2 + 0.3 * prev
+                        moment2_ema[name] = decay * prev + (1 - decay) * blended
                         rms = math.sqrt(moment2_ema[name])
                         norm_ema[name] = rms
                         clip_min[name] = max(1e-4, args.dp_k_min * rms)
@@ -1701,12 +1712,13 @@ if __name__ == '__main__':
                         scale_ema[name] = decay * scale_prev + (1 - decay) * scale_est
                         if name in sentinel_layers:
                             logging.info(
-                                'Sentinel %s: debiased=%.6f moment2=%.6f clip=%.6f scale=%.6f',
+                                'Sentinel %s: moment2=%.6f ema=%.6f clip=%.6f scale=%.6f noised=%.6f',
                                 name,
-                                float(debiased),
+                                float(moment2),
                                 float(moment2_ema[name]),
                                 float(layer_clips.get(name, float('nan'))),
                                 float(scale_ema.get(name, float('nan'))),
+                                float(noised_trimmed_mean),
                             )
                         rms_values.append(rms)
                         scale_values.append(scale_ema[name])
