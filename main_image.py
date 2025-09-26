@@ -51,6 +51,13 @@ def _is_bn_or_bias(name: str, tensor: torch.Tensor) -> bool:
     return '.bn' in name or name.endswith('.bias') or tensor.dim() == 1
 
 
+def _should_skip_from_dp(name: str, tensor: torch.Tensor) -> bool:
+    """Return ``True`` when ``name`` should be excluded from DP accounting."""
+    if any(exempt in name for exempt in EXEMPT_NAMES):
+        return True
+    return _is_bn_or_bias(name, tensor)
+
+
 def clamp(value: int, min_value: int, max_value: int) -> int:
     """Clamp value within the inclusive range [min_value, max_value]."""
     return max(min_value, min(value, max_value))
@@ -1376,8 +1383,7 @@ if __name__ == '__main__':
     layer_clips.update({
         name: args.dp_clip
         for name, tensor in global_model.state_dict().items()
-        if not any(e in name for e in EXEMPT_NAMES)
-        and not _is_bn_or_bias(name, tensor)
+        if not _should_skip_from_dp(name, tensor)
     })
     sentinel_layers.clear()
     sentinel_layers.update(determine_sentinel_layers(layer_clips))
@@ -1578,9 +1584,7 @@ if __name__ == '__main__':
                 num_clients = len(deltas)
                 for delta in deltas.values():
                     for key, val in delta.items():
-                        if any(exempt in key for exempt in EXEMPT_NAMES):
-                            continue
-                        if _is_bn_or_bias(key, val):
+                        if _should_skip_from_dp(key, val):
                             continue
                         if key not in avg_delta:
                             avg_delta[key] = torch.zeros_like(val)
@@ -1593,9 +1597,7 @@ if __name__ == '__main__':
                             continue
                 for delta in clipped_updates.values():
                     for key, val in delta.items():
-                        if any(exempt in key for exempt in EXEMPT_NAMES):
-                            continue
-                        if _is_bn_or_bias(key, val):
+                        if _should_skip_from_dp(key, val):
                             continue
                         if key not in avg_clipped:
                             avg_clipped[key] = torch.zeros_like(val)
@@ -1826,9 +1828,7 @@ if __name__ == '__main__':
                     global_w[key] = old_w[key] + eta_eff * v
             elif args.dp_mode == 'local' and old_w is not None:
                 for key, dw in avg_delta.items():
-                    if any(exempt in key for exempt in EXEMPT_NAMES):
-                        continue
-                    if _is_bn_or_bias(key, dw):
+                    if _should_skip_from_dp(key, dw):
                         continue
                     global_w[key] = old_w[key] + dw
 
