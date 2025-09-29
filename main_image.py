@@ -621,6 +621,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 #print(out[:3])
             if mode == 'train':
                 loss_all = 0
+                episode_acc = None
                 if args.fine_tune_steps > 0:
                     base_steps = args.fine_tune_steps
                     inner_lr = args.fine_tune_lr * min(1.0, (K / REFERENCE_SHOT) ** 0.5)
@@ -752,14 +753,18 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                             gmodel_params[name].data.add_(-args.meta_lr * param.grad)
                     base_model.load_state_dict(gmodel_base.state_dict())
                     ##################################
+                    with torch.no_grad():
+                        episode_predictions = out.argmax(dim=-1)
+                        episode_acc = (episode_predictions == query_labels).float().mean().item()
                     del net_new, X_out_query, out
     
                 with torch.no_grad():
                     global_predictions = torch.argmax(out_all, dim=-1)
                     global_acc = (global_predictions == y_total).float().mean().item()
-                    episode_logits = out_all[N * K:, transformed_class_list]
-                    episode_predictions = torch.argmax(episode_logits, dim=-1)
-                    episode_acc = (episode_predictions == query_labels).float().mean().item()
+                    if episode_acc is None:
+                        episode_logits = out_all[N * K:, transformed_class_list]
+                        episode_predictions = torch.argmax(episode_logits, dim=-1)
+                        episode_acc = (episode_predictions == query_labels).float().mean().item()
                 acc_train = episode_acc
 
                 del X_out_all,  out_all
