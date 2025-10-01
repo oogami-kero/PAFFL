@@ -183,6 +183,8 @@ def get_args():
     parser.add_argument('--save_model',type=int,default=0)
     parser.add_argument('--use_project_head', type=int, default=1)
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
+    parser.add_argument('--use_transform_layer', type=int, default=0,
+                        help='Enable client-side transform layer before shared head (0/1)')
     args = parser.parse_args()
     return args
 
@@ -485,7 +487,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 net_para_ori=net.state_dict()
                 param_require_grad={}
                 for key, param in net_new.named_parameters():
-                    if key=='few_classify.weight' or key=='few_classify.bias' or 'transformer' in key:
+                    if (key=='few_classify.weight' or key=='few_classify.bias'
+                            or 'transformer' in key or 'transform_layer' in key):
                     #if key != 'module.all_classify.weight' and key != 'module.all_classify.bias':
                         param_require_grad[key]=param
 
@@ -790,7 +793,8 @@ if __name__ == '__main__':
                 else:
                     net_para = net.state_dict()
                     for key in net_para:
-                        if key!='few_classify.weight' and key!='few_classify.bias' and 'transformer' not in key:
+                        if (key!='few_classify.weight' and key!='few_classify.bias'
+                                and 'transformer' not in key and 'transform_layer' not in key):
                             net_para[key]=global_w[key]
                     net.load_state_dict(net_para)
 

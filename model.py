@@ -993,6 +993,7 @@ class LSTMAtt(nn.Module):
         # ebd = WORDEBD(args.finetune_ebd)
 
         self.args = args
+        self.use_transform_layer = bool(getattr(args, "use_transform_layer", 0))
         if args.dataset=='20newsgroup':
             self.max_text_len=500
         elif args.dataset=='fewrel':
@@ -1016,6 +1017,10 @@ class LSTMAtt(nn.Module):
         self.proj = nn.Linear(u * 2, da)
 
         self.ebd_dim = u * 2
+
+        if self.use_transform_layer:
+            self.transform_layer = nn.Linear(self.ebd_dim, self.ebd_dim, bias=False)
+            nn.init.eye_(self.transform_layer.weight)
 
         self.l1 = nn.Linear(self.ebd_dim, self.ebd_dim)
         self.l2 = nn.Linear(self.ebd_dim, out_dim)
@@ -1083,6 +1088,8 @@ class LSTMAtt(nn.Module):
 
         # aggregate
         ebd = torch.sum(ebd * alpha.unsqueeze(-1), dim=1)
+        if self.use_transform_layer:
+            ebd = self.transform_layer(ebd)
         #ebd = ebd.mean(1)
 
         #x=F.dropout(ebd, p=0.5,training=self.training)
