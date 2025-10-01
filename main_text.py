@@ -17,10 +17,6 @@ from PIL import Image
 
 from model import *
 from utils import *
-from dp_utils import compute_noisy_delta, compute_epsilon
-import opacus_custom_samplers  # register custom Opacus samplers
-from opacus import GradSampleModule
-from opacus.optimizers import DPOptimizer
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -187,10 +183,6 @@ def get_args():
     parser.add_argument('--save_model',type=int,default=0)
     parser.add_argument('--use_project_head', type=int, default=1)
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
-    parser.add_argument('--use_transform_layer', type=int, default=1, help='toggle the per-client transform layer')
-    parser.add_argument('--clip_norm', type=float, default=1.0, help='max L2 norm for client update')
-    parser.add_argument('--noise_multiplier', type=float, default=0.0, help='noise multiplier for DP')
-    parser.add_argument('--dp_delta', type=float, default=1e-5, help='delta for DP accounting')
     args = parser.parse_args()
     return args
 
@@ -258,46 +250,19 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_train_client,y_train_client, X_test, y_test,
                                         device='cpu', test_only=False,test_only_k=0):
 
-
-    if not isinstance(net.shared, GradSampleModule):
-        net.shared = GradSampleModule(net.shared)
-
+    
     if args_optimizer == 'adam':
-        base_opt = optim.Adam(net.shared.parameters(), lr=lr, weight_decay=args.reg)
+        optimizer = optim.Adam( net.parameters(), lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'amsgrad':
-        base_opt = optim.Adam(
-            filter(lambda p: p.requires_grad, net.shared.parameters()),
-            lr=lr,
-            weight_decay=args.reg,
-            amsgrad=True,
-        )
+        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
+                               amsgrad=True)
     elif args_optimizer == 'sgd':
-        base_opt = optim.SGD(
-            filter(lambda p: p.requires_grad, net.shared.parameters()),
-            lr=lr,
-            momentum=0.9,
-            weight_decay=args.reg,
-        )
-    dp_optimizer = DPOptimizer(
-        base_opt,
-        noise_multiplier=args.noise_multiplier,
-        max_grad_norm=args.clip_norm,
-    )
-
-    transform_params = list(net.transform_layer.parameters())
-    optimizer_transform = (
-        optim.SGD(transform_params, lr=lr, momentum=0.9, weight_decay=args.reg)
-        if transform_params
-        else None
-    )
-    optimizer_few = optim.SGD(
-        net.few_classify.parameters(), lr=lr, momentum=0.9, weight_decay=args.reg
-    )
+        optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=0.05, momentum=0.9,
+                              weight_decay=args.reg)
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
 
     def train_epoch(epoch, mode='train'):
-        nonlocal dp_optimizer, optimizer_transform, optimizer_few
 
         if mode == 'train':
 
@@ -322,10 +287,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 K = 5#args.K
                 Q = args.Q
             net.train()
-            dp_optimizer.zero_grad()
-            if optimizer_transform:
-                optimizer_transform.zero_grad()
-            optimizer_few.zero_grad()
+            optimizer.zero_grad()
             if args.dataset == 'FC100':
                 #X_transform = transform_train(normalize=normalize_fc100, crop_size=32, padding=4)
                 X_transform=    transforms.Compose([
@@ -514,14 +476,29 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     loss_all += contras_loss / Q *0.1
                 loss_all += loss_ce(out_all, y_total)
                 loss_all.backward()
-                dp_optimizer.step()
-                if optimizer_transform:
-                    optimizer_transform.step()
-                optimizer_few.step()
+                optimizer.step()
                 ############################
 
                 X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-                del net_new, X_out_query, out
+                ###################################
+                # few_classify update
+                net_para_ori=net.state_dict()
+                param_require_grad={}
+                for key, param in net_new.named_parameters():
+                    if key=='few_classify.weight' or key=='few_classify.bias' or 'transformer' in key:
+                    #if key != 'module.all_classify.weight' and key != 'module.all_classify.bias':
+                        param_require_grad[key]=param
+
+                #meta-update few-classifier on query
+                loss = loss_ce(out, query_labels)
+                out_sup_on_N_class = out_all[N * K:, transformed_class_list]
+                loss += loss_ce(out,out_sup_on_N_class)*0
+                grad = torch.autograd.grad(loss, param_require_grad.values())
+                for key, grad_ in zip(param_require_grad.keys(), grad):
+                    net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
+                net.load_state_dict(net_para_ori)
+                ##################################
+                del net_new,X_out_query, out
 
             if np.random.rand() < 0.005:
                 print('loss: {:.4f}'.format(loss_all.item()))
@@ -542,15 +519,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                     support_features = l2_normalize(X_out_sup.detach().cpu()).numpy()
                     query_features = l2_normalize(X_out_query.detach().cpu()).numpy()
-
-                    # ---- PATCH START ---------------------------------
-                    # Replace any NaN / ±Inf that may have been produced by l2_normalize
-                    # (zero vectors occasionally sneak through and break scikit-learn).
-                    support_features = np.nan_to_num(
-                        support_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-                    query_features = np.nan_to_num(
-                        query_features, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-                    # ---- PATCH END -----------------------------------
 
                     clf = LogisticRegression(penalty='l2',
                                              random_state=0,
@@ -687,23 +655,7 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 if __name__ == '__main__':
     args = get_args()
     print(args)
-
-    # Debug
-    import torch, time
-
-    print(torch.cuda.is_available())  # True
-    print(torch.cuda.current_device())  # 0
-    print(torch.cuda.get_device_name(0))  # GeForce RTX 3070
-    start = time.time()
-    dummy = torch.rand(4096, 4096, device='cuda') @ torch.rand(4096, 4096, device='cuda')
-    torch.cuda.synchronize()
-    print("GEMM time:", time.time() - start, "s")  # should be < 0.2 s
-
-    if torch.cuda.is_available():
-        print(f"Running on GPU {torch.cuda.current_device()}:",
-              torch.cuda.get_device_name(0))
-    # Debug End
-
+    
     if args.dataset=='FC100':
         fine_split_train_map={class_:i for i,class_ in enumerate(fine_split['train'])}
     elif args.dataset=='20newsgroup':
@@ -816,7 +768,6 @@ if __name__ == '__main__':
         best_confident_acc=0
         best_acc_5=0
 
-        dp_steps = 0
         for round in range(n_comm_rounds):
             #logger.info("in comm round:" + str(round))
             party_list_this_round = party_list_rounds[round]
@@ -827,8 +778,8 @@ if __name__ == '__main__':
 
             nets_this_round = {k: nets[k] for k in party_list_this_round}
 
-            total_data_points = sum(len(net_dataidx_map[r]) for r in range(args.n_parties))
-            fed_avg_freqs = {r: len(net_dataidx_map[r]) / total_data_points for r in range(args.n_parties)}
+            total_data_points = sum([len(net_dataidx_map[r]) for r in range(args.n_parties)])
+            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in range(args.n_parties)]
             
             for net_id, net in nets_this_round.items():
                 if use_minus:
@@ -839,13 +790,8 @@ if __name__ == '__main__':
                 else:
                     net_para = net.state_dict()
                     for key in net_para:
-                        if (
-                            key != 'few_classify.weight'
-                            and key != 'few_classify.bias'
-                            and 'transformer' not in key
-                            and 'transform_layer' not in key
-                        ):
-                            net_para[key] = global_w[key]
+                        if key!='few_classify.weight' and key!='few_classify.bias' and 'transformer' not in key:
+                            net_para[key]=global_w[key]
                     net.load_state_dict(net_para)
 
             for k in [1,5]:
@@ -866,44 +812,14 @@ if __name__ == '__main__':
 
             local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
 
-            deltas = {}
-            for nid, net in nets_this_round.items():
-                local_params = net.state_dict()
-                noisy_delta, delta_before = compute_noisy_delta(global_w, local_params, args.clip_norm, args.noise_multiplier)
-                sample_before = next(iter(delta_before.values())).view(-1)[:3].cpu()
-                sample_after = next(iter(noisy_delta.values())).view(-1)[:3].cpu()
-                print(f"Delta sample client {nid}: {sample_before.tolist()} -> {sample_after.tolist()}")
-                deltas[nid] = noisy_delta
-            # Count each noisy aggregation once per round
-            dp_steps += len(nets_this_round)
-            eps = compute_epsilon(
-                dp_steps,
-                args.noise_multiplier,
-                args.dp_delta,
-                accountant="rdp",
-                sampling_rate=args.sample_fraction,
-            )
-            print(f"Approx DP epsilon after {round+1} rounds: {eps:.4f}")
-
-            # Aggregate only shared parameters; classifier weights stay private
-            global_update = {
-                k: torch.zeros_like(v)
-                for k, v in global_w.items()
-                if (
-                    torch.is_floating_point(v)
-                    and not k.startswith("transform_layer.")
-                    and k != "few_classify.weight"
-                    and k != "few_classify.bias"
-                )
-            }
-
-            for nid, delta in deltas.items():
-                weight = fed_avg_freqs[nid]
-                for key in delta:
-                    global_update[key] += delta[key] * weight
-
-            for key in global_update:
-                global_w[key] += global_update[key]
+            for net_id, net in enumerate(nets_this_round.values()):
+                net_para = net.state_dict()
+                if net_id == 0:
+                    for key in net_para:
+                        global_w[key] = net_para[key] * fed_avg_freqs[net_id]
+                else:
+                    for key in net_para:
+                        global_w[key] += net_para[key] * fed_avg_freqs[net_id]
 
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)

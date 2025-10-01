@@ -6,8 +6,7 @@ from collections import defaultdict
 from tqdm import tqdm
 import numpy as np
 import torch
-from torchtext.vocab import GloVe
-from torchtext.vocab import build_vocab_from_iterator
+from torchtext.vocab import vocab, Vectors, GloVe
 
 from embedding.avg import AVG
 from embedding.cxtebd import CXTEBD
@@ -322,7 +321,7 @@ def data_to_nparray(data, stoi, vocab_size, max_text_len=None):
         max_text_len = max(text_len)
 
     # initialize the big numpy array by <pad>
-    text = stoi['<pad>'] * np.ones([len(data), max_text_len],
+    text = stoi['pad'] * np.ones([len(data), max_text_len],
                                                dtype=np.int64)
     print('max_len', max_text_len)
 
@@ -427,8 +426,7 @@ def load_dataset(datadir, dataset, args=None):
     all_data = _load_json('./data/text-data/' + dataset + '.json')
 
     print('Loading word vectors')
-    # path = os.path.join('./', 'wiki.en.vec')
-    path = os.path.join('./', 'glove.42B.300d.txt')
+    path = os.path.join('./', 'wiki.en.vec')
     if not os.path.exists(path):
         # Download the word vector and save it locally:
         print('Downloading word vectors')
@@ -440,21 +438,9 @@ def load_dataset(datadir, dataset, args=None):
     #vectors = Vectors('wiki.en.vec', cache='./')
     vectors=GloVe(name='42B', dim=300)
     print(vectors)
-
-    # 1. Create an iterator that yields lists of tokens
-    def yield_tokens(data_iter):
-        for example in data_iter:
-            yield example['text']
-
-    # 2. Build the vocabulary using the new API
-    Vocab = build_vocab_from_iterator(
-        yield_tokens(all_data),
-        specials=['<pad>', '<unk>'],
-        min_freq=5
-    )
-    # 3. Set the default index for out-of-vocabulary words
-    Vocab.set_default_index(Vocab['<unk>'])
-    
+    Vocab = vocab( collections.Counter(_read_words(all_data)),  # ,vectors=vectors,
+                  specials=['<pad>', '<unk>'],
+                  min_freq=5)
     # Vocab.insert_token('<pad>',32135)
     print('vocab size:', len(Vocab.get_stoi()))
     Vocab.set_default_index(32137)

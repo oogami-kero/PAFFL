@@ -6,7 +6,14 @@ import torchvision.models as models
 from resnetcifar import ResNet18_cifar10, ResNet50_cifar10
 from torch.distributions import Bernoulli
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from torchtext.vocab import GloVe
+# TorchText is only required for text datasets. Wrap import to keep image-only
+# runs (e.g., FC100/miniImageNet) working even if torchtext is incompatible
+try:
+    from torchtext.vocab import vocab, Vectors, GloVe  # type: ignore
+    _TORCHTEXT_AVAILABLE = True
+except Exception as _e:
+    _TORCHTEXT_AVAILABLE = False
+    _TORCHTEXT_IMPORT_ERROR = _e
 from embedding.meta import RNN
 from embedding.auxiliary.factory import get_embedding
 
@@ -16,22 +23,6 @@ def l2_normalize(x):
     out = x.div(norm + 1e-9)
     return out
 
-
-class TransformLayer(nn.Module):
-    """Per-client affine transform layer from PrivateFL."""
-    def __init__(self, num_features):
-        super().__init__()
-        self.alpha = nn.Parameter(torch.ones(num_features))
-        self.beta = nn.Parameter(torch.zeros(num_features))
-
-    def forward(self, x):
-        if x.dim() == 4:
-            a = self.alpha.view(1, -1, 1, 1)
-            b = self.beta.view(1, -1, 1, 1)
-        else:
-            a = self.alpha.view(1, -1)
-            b = self.beta.view(1, -1)
-        return a * x + b
 
 class DropBlock(nn.Module):
     def __init__(self, block_size):
@@ -106,38 +97,18 @@ def conv3x3(in_planes, out_planes, stride=1):
                      padding=1, bias=False)
 
 
-class GroupOrLayerNorm(nn.Module):
-    """Normalization layer that falls back to LayerNorm when group division fails."""
-
-    def __init__(self, planes: int):
-        super().__init__()
-        num_groups = min(32, planes)
-        if planes % num_groups == 0:
-            self.use_group = True
-            self.norm = nn.GroupNorm(num_groups=num_groups, num_channels=planes)
-        else:
-            self.use_group = False
-            self.norm = nn.LayerNorm(planes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.use_group:
-            return self.norm(x)
-        # LayerNorm expects the channel dimension last
-        return self.norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-
-
 class BasicBlock(nn.Module):
     expansion = 1
 
     def __init__(self, inplanes, planes, stride=1, downsample=None, drop_rate=0.0, drop_block=False, block_size=1):
         super(BasicBlock, self).__init__()
         self.conv1 = conv3x3(inplanes, planes)
-        self.bn1 = GroupOrLayerNorm(planes)
+        self.bn1 = nn.BatchNorm2d(planes)
         self.relu = nn.LeakyReLU(0.1)
         self.conv2 = conv3x3(planes, planes)
-        self.bn2 = GroupOrLayerNorm(planes)
+        self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = conv3x3(planes, planes)
-        self.bn3 = GroupOrLayerNorm(planes)
+        self.bn3 = nn.BatchNorm2d(planes)
         self.maxpool = nn.MaxPool2d(stride)
         self.downsample = downsample
         self.stride = stride
@@ -204,7 +175,7 @@ class ResNet(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm, nn.LayerNorm)):
+            elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
@@ -214,7 +185,7 @@ class ResNet(nn.Module):
             downsample = nn.Sequential(
                 nn.Conv2d(self.inplanes, planes * block.expansion,
                           kernel_size=1, stride=1, bias=False),
-                GroupOrLayerNorm(planes * block.expansion),
+                nn.BatchNorm2d(planes * block.expansion),
             )
 
         layers = []
@@ -770,6 +741,8 @@ class ModelFedCon(nn.Module):
     def __init__(self, base_model, out_dim, n_classes, net_configs=None):
         super(ModelFedCon, self).__init__()
 
+        self.use_transform_layer = bool(getattr(args, 'use_transform_layer', 0))
+
         if base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel" or base_model == "resnet50":
             basemodel = ResNet50_cifar10()
             self.features = nn.Sequential(*list(basemodel.children())[:-1])
@@ -885,63 +858,54 @@ class ModelFed_Adp(nn.Module):
 
     def __init__(self, base_model, out_dim, n_classes, total_classes, net_configs=None, args=None):
         super(ModelFed_Adp, self).__init__()
-
-        in_channels = 1 if args.dataset in {'femnist', 'emnist', 'xray'} else 3
-        if getattr(args, 'use_transform_layer', 1):
-            self.transform_layer = TransformLayer(in_channels)
-        else:
-            self.transform_layer = nn.Identity()
+        self.use_transform_layer = bool(getattr(args, 'use_transform_layer', 0))
 
         if base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel" or base_model == "resnet50":
             basemodel = ResNet50_cifar10()
-            features = nn.Sequential(*list(basemodel.children())[:-1])
+            self.features = nn.Sequential(*list(basemodel.children())[:-1])
             num_ftrs = basemodel.fc.in_features
         elif base_model == "resnet18-cifar10" or base_model == "resnet18":
             basemodel = ResNet18_cifar10()
-            features = nn.Sequential(*list(basemodel.children())[:-1])
+            self.features = nn.Sequential(*list(basemodel.children())[:-1])
             num_ftrs = basemodel.fc.in_features
         elif base_model == "mlp":
-            features = MLP_header()
+            self.features = MLP_header()
             num_ftrs = 512
         elif base_model == 'simple-cnn':
-            features = SimpleCNN_header(input_dim=(16 * 18 * 18 if args.dataset == 'miniImageNet' else 16 * 5 * 5),
+            self.features = SimpleCNN_header(input_dim=(16 * 18 * 18 if args.dataset == 'miniImageNet' else 16 * 5 * 5),
                                              hidden_dims=[120, 84], output_dim=n_classes)
             num_ftrs = 84
         elif base_model == 'simple-cnn-mnist':
-            features = SimpleCNNMNIST_header(input_dim=(16 * 4 * 4), hidden_dims=[120, 84], output_dim=n_classes)
+            self.features = SimpleCNNMNIST_header(input_dim=(16 * 4 * 4), hidden_dims=[120, 84], output_dim=n_classes)
             num_ftrs = 84
         elif base_model == 'resnet12':
 
             if args.dataset=='FC100':
-                features = resnet12(avg_pool=True, drop_rate=0.1, dropblock_size=2)
+                self.features = resnet12(avg_pool=True, drop_rate=0.1, dropblock_size=2)
                 #num_ftrs=2560
                 num_ftrs=640
             else:
-                features = resnet12(avg_pool=True, drop_rate=0.1)
+                self.features = resnet12(avg_pool=True, drop_rate=0.1)
                 #num_ftrs = 16000
                 num_ftrs = 640
 
+        # summary(self.features.to('cuda:0'), (3,32,32))
+        # print("features:", self.features)
         # projection MLP
-        l1 = nn.Linear(num_ftrs, num_ftrs)
-        l2 = nn.Linear(num_ftrs, out_dim)
+        self.l1 = nn.Linear(num_ftrs, num_ftrs)
+        self.l2 = nn.Linear(num_ftrs, out_dim)
 
-        # classifier for shared representation
-        all_classify = nn.Linear(out_dim, total_classes)
+        # last layer for few
+        self.few_classify = nn.Linear(num_ftrs, n_classes)
+
+        self.all_classify = nn.Linear(out_dim, total_classes)
+
+        if self.use_transform_layer:
+            self.transform_layer = nn.Linear(num_ftrs, num_ftrs, bias=False)
+            nn.init.eye_(self.transform_layer.weight)
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4)
-        transformer = nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
-
-        # modules optimized with DP-SGD
-        self.shared = nn.Sequential(
-            features,
-            l1,
-            l2,
-            all_classify,
-            transformer,
-        )
-
-        # last layer for few (kept local)
-        self.few_classify = nn.Linear(num_ftrs, n_classes)
+        self.transformer= nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
 
         print(self.state_dict().keys())
 
@@ -954,56 +918,71 @@ class ModelFed_Adp(nn.Module):
             raise ("Invalid model name. Check the config file and pass one of: resnet18 or resnet50")
 
     def forward(self, x_ori, all_classify=False):
-        x_trans = self.transform_layer(x_ori)
-        h = self.shared[0](x_trans)
+        h = self.features(x_ori)
 
+        # print("h before:", h)
+        # print("h size:", h.size())
         ebd = h.squeeze()
+        # print("h after:", h)
+        #x = self.l1(h)
+        #x = F.relu(x)
+        #x = self.l2(x)
+
+        if self.use_transform_layer:
+            ebd = self.transform_layer(ebd)
 
         if not all_classify:
-            x = self.shared[4](ebd)
+            x=self.transformer(ebd)
             y = self.few_classify(x)
         else:
-            x = self.shared[1](ebd)
+            x = self.l1(ebd)
             x = F.relu(x)
-            x = self.shared[2](x)
-            y = self.shared[3](x)
+            x = self.l2(x)
+            y = self.all_classify(x)
         return ebd, x, y
 
 
-class WORDEBD(nn.Module):
-    '''
-        An embedding layer that maps the token id into its corresponding word
-        embeddings. The word embeddings are kept as fixed once initialized.
-    '''
-
-    def __init__(self, finetune_ebd):
-        super(WORDEBD, self).__init__()
-        #vectors = Vectors('wiki.en.vec', cache='./')
-        vectors = GloVe(name='42B', dim=300)
-
-        self.vocab_size, self.embedding_dim = vectors.vectors.size()
-        self.embedding_layer = nn.Embedding(
-            self.vocab_size, self.embedding_dim)
-        self.embedding_layer.weight.data = vectors.vectors
-
-        self.finetune_ebd = finetune_ebd
-
-        if self.finetune_ebd:
-            self.embedding_layer.weight.requires_grad = True
-        else:
-            self.embedding_layer.weight.requires_grad = False
-
-    def forward(self, data, weights=None):
+if _TORCHTEXT_AVAILABLE:
+    class WORDEBD(nn.Module):
         '''
-            @param text: batch_size * max_text_len
-            @return output: batch_size * max_text_len * embedding_dim
+            An embedding layer that maps token ids to pretrained GloVe vectors.
+            Uses torchtext to load GloVe. Only needed for text datasets.
         '''
-        if (weights is None) or (self.finetune_ebd == False):
-            return self.embedding_layer(data)
 
-        else:
-            return F.embedding(data['text'],
-                               weights['ebd.embedding_layer.weight'])
+        def __init__(self, finetune_ebd):
+            super(WORDEBD, self).__init__()
+            vectors = GloVe(name='42B', dim=300)
+
+            self.vocab_size, self.embedding_dim = vectors.vectors.size()
+            self.embedding_layer = nn.Embedding(
+                self.vocab_size, self.embedding_dim)
+            self.embedding_layer.weight.data = vectors.vectors
+
+            self.finetune_ebd = finetune_ebd
+
+            if self.finetune_ebd:
+                self.embedding_layer.weight.requires_grad = True
+            else:
+                self.embedding_layer.weight.requires_grad = False
+
+        def forward(self, data, weights=None):
+            '''
+                @param text: batch_size * max_text_len
+                @return output: batch_size * max_text_len * embedding_dim
+            '''
+            if (weights is None) or (self.finetune_ebd == False):
+                return self.embedding_layer(data)
+
+            else:
+                return F.embedding(data['text'],
+                                   weights['ebd.embedding_layer.weight'])
+else:
+    class WORDEBD(nn.Module):
+        def __init__(self, finetune_ebd):
+            super(WORDEBD, self).__init__()
+            raise ImportError(
+                f"torchtext is required for text embeddings but could not be imported: {_TORCHTEXT_IMPORT_ERROR}"
+            )
 
 
 class LSTMAtt(nn.Module):
@@ -1023,11 +1002,6 @@ class LSTMAtt(nn.Module):
 
         self.ebd = ebd
         # self.aux = get_embedding(args)
-
-        if getattr(args, 'use_transform_layer', 1):
-            self.transform_layer = TransformLayer(self.ebd.embedding_dim)
-        else:
-            self.transform_layer = nn.Identity()
 
         self.input_dim = self.ebd.embedding_dim  # + self.aux.embedding_dim
 
@@ -1070,8 +1044,7 @@ class LSTMAtt(nn.Module):
         att = att.view(batch_size, max_text_len, 1)  # unnormalized
 
         # create mask
-        idxes = torch.arange(max_text_len, out=torch.cuda.LongTensor(max_text_len,
-                                                                     device=text_len.device)).unsqueeze(0)
+        idxes = torch.arange(max_text_len, device=text_len.device).long().unsqueeze(0)
         mask = (idxes < text_len.unsqueeze(1)).bool()
         att[~mask] = float('-inf')
 
@@ -1088,9 +1061,8 @@ class LSTMAtt(nn.Module):
             @return output: batch_size * embedding_dim
         """
 
-        # Apply the word embedding then personalize via transform layer
+        # Apply the word embedding, result:  batch_size, doc_len, embedding_dim
         ebd = self.ebd(data[:, :self.max_text_len])
-        ebd = self.transform_layer(ebd)
 
 
         # add augmented embedding if applicable
@@ -1130,5 +1102,3 @@ class LSTMAtt(nn.Module):
             x = self.l2(x)
             y = self.all_classify(x)
         return ebd, x, y
-
-
