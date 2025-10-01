@@ -10,6 +10,7 @@ import copy
 import datetime
 import random
 import time
+from pathlib import Path
 from sklearn.linear_model import LogisticRegression
 from sklearn import metrics
 
@@ -21,6 +22,144 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
+
+def _get_head_param_names(model):
+    prefixes = ('l1', 'l2', 'all_classify')
+    return [name for name, _ in model.named_parameters() if name.startswith(prefixes)]
+
+
+def _parse_attack_rounds(rounds_arg, total_rounds):
+    if rounds_arg is None:
+        return {total_rounds - 1}
+    rounds_arg = rounds_arg.strip()
+    if rounds_arg.lower() == 'all':
+        return set(range(total_rounds))
+    result = set()
+    for part in rounds_arg.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            start_str, end_str = part.split('-', 1)
+            start = int(start_str.strip())
+            end = int(end_str.strip())
+            result.update(range(start, end + 1))
+        else:
+            result.add(int(part))
+    return {r for r in result if 0 <= r < total_rounds}
+
+
+def _serialize_args(args):
+    serialized = {}
+    for key, value in vars(args).items():
+        if isinstance(value, (int, float, str, bool)) or value is None:
+            serialized[key] = value
+        elif isinstance(value, (list, tuple)):
+            serialized[key] = list(value)
+        else:
+            serialized[key] = str(value)
+    return serialized
+
+
+def _normalize_class_counts(counts):
+    normalized = {}
+    for client, cls_counts in counts.items():
+        normalized[str(client)] = {int(cls): int(cnt) for cls, cnt in cls_counts.items()}
+    return normalized
+
+
+def _prepare_attack_probes_text(X_train, y_train, X_test, y_test, train_indices, test_indices, device):
+    train_inputs = torch.tensor(X_train[train_indices], device=device, dtype=torch.long) if len(train_indices) else None
+    test_inputs = torch.tensor(X_test[test_indices], device=device, dtype=torch.long) if len(test_indices) else None
+    train_labels = torch.tensor(y_train[train_indices], device=device, dtype=torch.long) if len(train_indices) else None
+    test_labels = torch.tensor(y_test[test_indices], device=device, dtype=torch.long) if len(test_indices) else None
+    return train_inputs, train_labels, test_inputs, test_labels
+
+
+def _init_attack_context_text(args, device, global_model, X_train, y_train, X_test, y_test, client_class_counts):
+    if not getattr(args, 'attack_dump', 0):
+        return None
+
+    attack_dir_root = Path(args.attack_dir)
+    name_component = args.log_file_name if args.log_file_name else datetime.datetime.now().strftime('attack_%Y%m%d_%H%M%S')
+    attack_dir = attack_dir_root / name_component
+    attack_dir.mkdir(parents=True, exist_ok=True)
+
+    attack_rounds = _parse_attack_rounds(args.attack_dump_rounds, args.comm_round)
+    head_param_names = _get_head_param_names(global_model)
+    rng = np.random.default_rng(args.init_seed)
+
+    probe_size = max(0, min(args.attack_probe_size, len(y_test)))
+    test_indices = rng.choice(len(y_test), size=probe_size, replace=False) if probe_size > 0 else np.array([], dtype=int)
+    train_indices = rng.choice(len(y_train), size=probe_size, replace=False) if probe_size > 0 else np.array([], dtype=int)
+
+    probe_train_inputs, probe_train_labels, probe_test_inputs, probe_test_labels = _prepare_attack_probes_text(
+        X_train, y_train, X_test, y_test, train_indices, test_indices, device)
+
+    norm_counts = _normalize_class_counts(client_class_counts)
+
+    metadata = {
+        'dataset': args.dataset,
+        'use_transform_layer': bool(getattr(args, 'use_transform_layer', 0)),
+        'attack_rounds': sorted(attack_rounds),
+        'head_param_names': head_param_names,
+        'probe_train_indices': train_indices.tolist(),
+        'probe_test_indices': test_indices.tolist(),
+        'client_class_counts': norm_counts,
+        'args_summary': _serialize_args(args),
+    }
+    (attack_dir / 'metadata.json').write_text(json.dumps(metadata, indent=2))
+
+    return {
+        'dir': attack_dir,
+        'rounds': attack_rounds,
+        'head_param_names': head_param_names,
+        'dump_clients': bool(args.attack_dump_clients),
+        'probe_train_inputs': probe_train_inputs,
+        'probe_train_labels': probe_train_labels,
+        'probe_test_inputs': probe_test_inputs,
+        'probe_test_labels': probe_test_labels,
+        'probe_train_indices': train_indices.tolist(),
+        'probe_test_indices': test_indices.tolist(),
+        'device': device,
+    }
+
+
+def _dump_attack_artifacts_text(ctx, round_idx, global_model, global_state, updated_state, nets_this_round):
+    attack_dir = ctx['dir']
+    suffix = f'round_{round_idx:04d}'
+    head_names = ctx['head_param_names']
+
+    head_state = {name: updated_state[name].detach().cpu().clone() for name in head_names}
+    head_update = {name: (updated_state[name] - global_state[name]).detach().cpu().clone() for name in head_names}
+    torch.save(head_state, attack_dir / f'{suffix}_head_state.pt')
+    torch.save(head_update, attack_dir / f'{suffix}_head_update.pt')
+
+    if ctx['dump_clients']:
+        client_updates = {}
+        for client_id, net in nets_this_round.items():
+            net_state = net.state_dict()
+            client_updates[str(client_id)] = {name: (net_state[name].detach().cpu().clone() - global_state[name].detach().cpu().clone()) for name in head_names}
+        torch.save(client_updates, attack_dir / f'{suffix}_client_updates.pt')
+
+    global_model.eval()
+    try:
+        if ctx['probe_test_inputs'] is not None:
+            with torch.no_grad():
+                _, _, logits_test = global_model(ctx['probe_test_inputs'], all_classify=True)
+            torch.save({'indices': ctx['probe_test_indices'],
+                        'logits': logits_test.cpu(),
+                        'labels': ctx['probe_test_labels'].cpu()},
+                       attack_dir / f'{suffix}_probe_test_logits.pt')
+        if ctx['probe_train_inputs'] is not None:
+            with torch.no_grad():
+                _, _, logits_train = global_model(ctx['probe_train_inputs'], all_classify=True)
+            torch.save({'indices': ctx['probe_train_indices'],
+                        'logits': logits_train.cpu(),
+                        'labels': ctx['probe_train_labels'].cpu()},
+                       attack_dir / f'{suffix}_probe_train_logits.pt')
+    finally:
+        global_model.train()
 
 fine_id_coarse_id = {0: 4, 1: 1, 2: 14, 3: 8, 4: 0, 5: 6, 6: 7, 7: 7, 8: 18, 9: 3, 10: 3, 11: 14, 12: 9, 13: 18, 14: 7, 15: 11, 16: 3, 17: 9, 18: 7, 19: 11, 20: 6, 21: 11, 22: 5, 23: 10, 24: 7, 25: 6, 26: 13, 27: 15, 28: 3, 29: 15, 30: 0, 31: 11, 32: 1, 33: 10, 34: 12, 35: 14, 36: 16, 37: 9, 38: 11, 39: 5, 40: 5, 41: 19, 42: 8, 43: 8, 44: 15, 45: 13, 46: 14, 47: 17, 48: 18, 49: 10, 50: 16, 51: 4, 52: 17, 53: 4, 54: 2, 55: 0, 56: 17, 57: 4, 58: 18, 59: 17, 60: 10, 61: 3, 62: 2, 63: 12, 64: 12, 65: 16, 66: 12, 67: 1, 68: 9, 69: 19, 70: 2, 71: 10, 72: 0, 73: 1, 74: 16, 75: 12, 76: 9, 77: 13, 78: 15, 79: 13, 80: 16, 81: 19, 82: 2, 83: 4, 84: 6, 85: 19, 86: 5, 87: 5, 88: 8, 89: 19, 90: 18, 91: 1, 92: 2, 93: 15, 94: 6, 95: 0, 96: 17, 97: 8, 98: 14, 99: 13}
 
@@ -184,6 +323,11 @@ def get_args():
     parser.add_argument('--use_project_head', type=int, default=1)
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
     parser.add_argument('--use_transform_layer', type=int, default=0, help='Enable client-side transform layer before shared head (0/1)')
+    parser.add_argument('--attack_dump', type=int, default=0, help='Enable attack artifact dumping (0/1)')
+    parser.add_argument('--attack_dump_rounds', type=str, default=None, help='Comma-separated rounds or "all" to dump attack artifacts')
+    parser.add_argument('--attack_dump_clients', type=int, default=0, help='Dump per-client head updates for attacks (0/1)')
+    parser.add_argument('--attack_probe_size', type=int, default=64, help='Number of train/test samples to log as attack probes')
+    parser.add_argument('--attack_dir', type=str, default='./attack_dumps', help='Directory to store attack artifacts')
     args = parser.parse_args()
     return args
 
@@ -752,6 +896,7 @@ if __name__ == '__main__':
 
     global_models, global_model_meta_data, global_layer_type = init_nets(args.net_config, 1, args, device='gpu')
     global_model = global_models[0]
+    attack_ctx = _init_attack_context_text(args, device, global_model, X_train, y_train, X_test, y_test, traindata_cls_counts)
     n_comm_rounds = args.comm_round
     if args.load_model_file and args.alg != 'plot_visual':
         global_model.load_state_dict(torch.load(args.load_model_file))
@@ -828,6 +973,8 @@ if __name__ == '__main__':
                     global_w[key] = old_w[key] - moment_v[key]
 
             global_model.load_state_dict(global_w)
+            if attack_ctx and round in attack_ctx['rounds']:
+                _dump_attack_artifacts_text(attack_ctx, round, global_model, global_state, global_w, nets_this_round)
 
 
             print('>> Current Round: {}'.format(round))
