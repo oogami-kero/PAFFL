@@ -993,7 +993,7 @@ class LSTMAtt(nn.Module):
         # ebd = WORDEBD(args.finetune_ebd)
 
         self.args = args
-        self.use_transform_layer = bool(getattr(args, "use_transform_layer", 0))
+        self.use_transform_layer = bool(getattr(args, 'use_transform_layer', 0))
         if args.dataset=='20newsgroup':
             self.max_text_len=500
         elif args.dataset=='fewrel':
@@ -1018,10 +1018,6 @@ class LSTMAtt(nn.Module):
 
         self.ebd_dim = u * 2
 
-        if self.use_transform_layer:
-            self.transform_layer = nn.Linear(self.ebd_dim, self.ebd_dim, bias=False)
-            nn.init.eye_(self.transform_layer.weight)
-
         self.l1 = nn.Linear(self.ebd_dim, self.ebd_dim)
         self.l2 = nn.Linear(self.ebd_dim, out_dim)
 
@@ -1029,6 +1025,10 @@ class LSTMAtt(nn.Module):
         self.few_classify = nn.Linear(out_dim, n_classes)
 
         self.all_classify = nn.Linear(out_dim, total_classes)
+
+        if self.use_transform_layer:
+            self.transform_layer = nn.Linear(self.ebd_dim, self.ebd_dim, bias=False)
+            nn.init.eye_(self.transform_layer.weight)
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.ebd_dim, nhead=4)
         self.transformer= nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
@@ -1088,8 +1088,6 @@ class LSTMAtt(nn.Module):
 
         # aggregate
         ebd = torch.sum(ebd * alpha.unsqueeze(-1), dim=1)
-        if self.use_transform_layer:
-            ebd = self.transform_layer(ebd)
         #ebd = ebd.mean(1)
 
         #x=F.dropout(ebd, p=0.5,training=self.training)
@@ -1098,6 +1096,9 @@ class LSTMAtt(nn.Module):
         #x = self.l1(ebd)
         #x = F.relu(x)
         #x = self.l2(x)
+
+        if self.use_transform_layer:
+            ebd = self.transform_layer(ebd)
 
 
         if not all_classify:
