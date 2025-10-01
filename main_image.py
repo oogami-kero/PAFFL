@@ -126,6 +126,16 @@ def _init_attack_context_image(args, device, global_model, X_train, y_train, X_t
 
     attack_rounds = _parse_attack_rounds(args.attack_dump_rounds, args.comm_round)
     head_param_names = _get_head_param_names(global_model)
+    # Build a mapping from raw class ids to head row indices when needed
+    class_to_head_index = None
+    if args.dataset == 'FC100':
+        try:
+            class_order = fine_split['train']
+            class_to_head_index = {int(cls): int(i) for i, cls in enumerate(class_order)}
+        except Exception:
+            class_to_head_index = None
+    elif args.dataset == 'miniImageNet':
+        class_to_head_index = {int(i): int(i) for i in range(64)}
     rng = np.random.default_rng(args.init_seed)
 
     probe_size = max(0, min(args.attack_probe_size, len(y_test)))
@@ -145,6 +155,7 @@ def _init_attack_context_image(args, device, global_model, X_train, y_train, X_t
         'probe_train_indices': train_indices.tolist(),
         'probe_test_indices': test_indices.tolist(),
         'client_class_counts': norm_counts,
+        'class_to_head_index': class_to_head_index,
         'args_summary': _serialize_args(args),
     }
     (attack_dir / 'metadata.json').write_text(json.dumps(metadata, indent=2))

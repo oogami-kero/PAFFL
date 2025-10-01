@@ -87,6 +87,23 @@ def _init_attack_context_text(args, device, global_model, X_train, y_train, X_te
 
     attack_rounds = _parse_attack_rounds(args.attack_dump_rounds, args.comm_round)
     head_param_names = _get_head_param_names(global_model)
+    # Build dataset-specific mapping from raw class ids to head row indices
+    class_to_head_index = None
+    try:
+        if args.dataset == '20newsgroup':
+            order = [1, 5, 10, 11, 13, 14, 16, 18]
+            class_to_head_index = {int(cls): int(i) for i, cls in enumerate(order)}
+        elif args.dataset == 'fewrel':
+            order = [0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14, 15, 16, 19, 21,
+                     22, 24, 25, 26, 27, 28, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+                     39, 40, 41, 43, 44, 45, 46, 48, 49, 50, 52, 53, 56, 57, 58,
+                     59, 61, 62, 63, 64, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75,
+                     76, 77, 78]
+            class_to_head_index = {int(cls): int(i) for i, cls in enumerate(order)}
+        elif args.dataset == 'huffpost':
+            class_to_head_index = {int(i): int(i) for i in range(20)}
+    except Exception:
+        class_to_head_index = None
     rng = np.random.default_rng(args.init_seed)
 
     probe_size = max(0, min(args.attack_probe_size, len(y_test)))
@@ -106,6 +123,7 @@ def _init_attack_context_text(args, device, global_model, X_train, y_train, X_te
         'probe_train_indices': train_indices.tolist(),
         'probe_test_indices': test_indices.tolist(),
         'client_class_counts': norm_counts,
+        'class_to_head_index': class_to_head_index,
         'args_summary': _serialize_args(args),
     }
     (attack_dir / 'metadata.json').write_text(json.dumps(metadata, indent=2))
@@ -956,14 +974,26 @@ if __name__ == '__main__':
 
             local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
 
-            for net_id, net in enumerate(nets_this_round.values()):
-                net_para = net.state_dict()
-                if net_id == 0:
-                    for key in net_para:
-                        global_w[key] = net_para[key] * fed_avg_freqs[net_id]
+            # Aggregate with normalized client weights and keep a copy of the pre-update state for attack dumps
+            client_weights = {r: len(net_dataidx_map[r]) / total_data_points for r in range(args.n_parties)}
+            selected_weight_sum = sum([client_weights[cid] for cid in nets_this_round.keys()])
+            if selected_weight_sum == 0:
+                selected_weight_sum = 1.0
+
+            global_state = copy.deepcopy(global_model.state_dict())
+            global_w = copy.deepcopy(global_state)
+
+            first_client = True
+            for client_id, net in nets_this_round.items():
+                net_state = net.state_dict()
+                weight = client_weights[client_id] / selected_weight_sum
+                if first_client:
+                    for key in net_state:
+                        global_w[key] = net_state[key] * weight
+                    first_client = False
                 else:
-                    for key in net_para:
-                        global_w[key] += net_para[key] * fed_avg_freqs[net_id]
+                    for key in net_state:
+                        global_w[key] += net_state[key] * weight
 
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)

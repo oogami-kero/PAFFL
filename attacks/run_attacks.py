@@ -65,14 +65,16 @@ def membership_inference_attack(train_logits_dict, test_logits_dict):
     }
 
 
-def property_inference_attack(client_updates, client_class_counts):
+def property_inference_attack(client_updates, client_class_counts, class_to_head_index=None):
     if not client_updates or not client_class_counts:
         return {}
 
     results = {}
     class_counts = {str(k): {int(cls): int(cnt) for cls, cnt in v.items()} for k, v in client_class_counts.items()}
-    sample_client = next(iter(class_counts))
-    class_ids = sorted(class_counts[sample_client].keys())
+    sample_client = next(iter(class_counts), None)
+    if sample_client is None:
+        return {}
+    class_ids = sorted(class_counts[str(sample_client)].keys())
 
     for class_id in class_ids:
         norms_pos = []
@@ -82,9 +84,20 @@ def property_inference_attack(client_updates, client_class_counts):
             counts = class_counts.get(client_key, {})
             if "all_classify.weight" not in updates:
                 continue
-            weight = updates["all_classify.weight"]
+            weight = updates.get("all_classify.weight")
+            if weight is None:
+                continue
             matrix = weight.reshape(weight.shape[0], -1)
-            row_norm = torch.norm(matrix[class_id]).item()
+            # Map raw class id to head row index if mapping provided
+            if class_to_head_index is not None:
+                head_idx = class_to_head_index.get(int(class_id))
+                if head_idx is None:
+                    continue
+            else:
+                head_idx = int(class_id)
+            if not (0 <= head_idx < matrix.shape[0]):
+                continue
+            row_norm = torch.norm(matrix[head_idx]).item()
             if counts.get(class_id, 0) > 0:
                 norms_pos.append(row_norm)
             else:
@@ -138,7 +151,7 @@ def process_round(dump_dir: Path, round_idx: int, metadata, attacks, topk):
 
     if 'property' in attacks:
         round_report['property_inference'] = property_inference_attack(
-            client_updates or {}, metadata.get('client_class_counts', {}))
+            client_updates or {}, metadata.get('client_class_counts', {}), metadata.get('class_to_head_index'))
 
     if 'inversion' in attacks:
         inversion_path = dump_dir / f"{suffix}_svd.pt"
