@@ -266,15 +266,35 @@ normalize_mini = transforms.Normalize(mean=mean_pix,
 #     normalize
 # ])
 
-def transform_train(normalize, crop_size=None, padding=None):
-    return transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.RandomCrop(crop_size, padding=padding),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15),
-        transforms.ToTensor(),
-        normalize
-    ])
+def transform_train(normalize, crop_size=None, padding=None, color_jitter=None):
+    transform_steps = [transforms.ToPILImage()]
+
+    if crop_size is not None:
+        transform_steps.append(transforms.RandomCrop(crop_size, padding=padding))
+
+    if color_jitter is not None:
+        transform_steps.append(color_jitter)
+
+    transform_steps.append(transforms.RandomHorizontalFlip())
+    transform_steps.append(transforms.ToTensor())
+    transform_steps.append(normalize)
+
+    return transforms.Compose(transform_steps)
+
+
+FC100_TRAIN_TRANSFORM = transform_train(
+    normalize=normalize_fc100,
+    crop_size=32,
+    padding=4,
+    color_jitter=transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4)
+)
+
+MINIIMAGENET_TRAIN_TRANSFORM = transform_train(
+    normalize=normalize_mini,
+    crop_size=84,
+    padding=8,
+    color_jitter=transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4)
+)
 
 
 # data prep for test set
@@ -529,28 +549,9 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             net.train()
             optimizer.zero_grad()
             if args.dataset == 'FC100':
-                #X_transform = transform_train(normalize=normalize_fc100, crop_size=32, padding=4)
-                X_transform=    transforms.Compose([
-                    lambda x: Image.fromarray(x),
-                    transforms.RandomCrop(32, padding=4),
-                    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-                    transforms.RandomHorizontalFlip(),
-                    lambda x: np.asarray(x),
-                    transforms.ToTensor(),
-                    normalize_fc100
-                ])
+                X_transform = FC100_TRAIN_TRANSFORM
             else:
-                #X_transform = transform_train(normalize=normalize_mini, crop_size=84)
-                X_transform=    transforms.Compose([
-                    lambda x: Image.fromarray(x),
-                                #transforms.ToPILImage(),
-                    transforms.RandomCrop(84, padding=8),
-                    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-                    transforms.RandomHorizontalFlip(),
-                    lambda x: np.asarray(x),
-                    transforms.ToTensor(),
-                    normalize_mini
-                ])
+                X_transform = MINIIMAGENET_TRAIN_TRANSFORM
 
         else:
             N=args.N
