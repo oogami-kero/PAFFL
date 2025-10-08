@@ -387,13 +387,19 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
             n_classes=args.N
         
     if args.mode=='few-shot' and args.method=='new':
-        if args.dataset=='20newsgroup':
-            ebd=WORDEBD(args.finetune_ebd)
+        base_ebd = None
+        if args.dataset in {'20newsgroup', 'fewrel', 'huffpost'}:
+            base_ebd = WORDEBD(args.finetune_ebd)
+            base_ebd = base_ebd.cpu()
         for net_i in range(n_parties):
             if args.dataset=='FC100' or args.dataset=='miniImageNet':
                 net = ModelFed_Adp(args.model, args.out_dim, n_classes, total_classes, net_configs, args)
             else:
-                net = LSTMAtt(WORDEBD(args.finetune_ebd), args.out_dim, n_classes, total_classes,args)
+                if base_ebd is not None:
+                    ebd_module = copy.deepcopy(base_ebd)
+                else:
+                    ebd_module = WORDEBD(args.finetune_ebd)
+                net = LSTMAtt(ebd_module, args.out_dim, n_classes, total_classes,args)
             if device == 'cpu':
                 net.to(device)
             else:
