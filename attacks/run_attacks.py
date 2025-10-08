@@ -18,7 +18,10 @@ def _load_metadata(dump_dir: Path):
 def _load_round_tensor(path: Path):
     if not path.exists():
         return None
-    return torch.load(path, map_location="cpu")
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location="cpu")
 
 
 def label_inference_attack(head_update, topk=5):
@@ -34,35 +37,91 @@ def label_inference_attack(head_update, topk=5):
     }
 
 
-def membership_inference_attack(train_logits_dict, test_logits_dict):
+def _to_tensor(x, dtype=None):
+    if x is None:
+        return None
+    if isinstance(x, torch.Tensor):
+        return x.clone().detach().to(dtype=dtype) if dtype is not None else x.clone().detach()
+    return torch.tensor(x, dtype=dtype) if dtype is not None else torch.tensor(x)
+
+
+def _map_labels(labels: torch.Tensor, mapping: dict, num_classes: int):
+    if mapping is None:
+        # If no mapping, ensure labels are within range
+        mask = (labels >= 0) & (labels < num_classes)
+        return labels[mask], mask
+    mapped = []
+    mask_list = []
+    for v in labels.tolist():
+        mv = mapping.get(int(v)) if mapping is not None else int(v)
+        if mv is not None and 0 <= int(mv) < num_classes:
+            mapped.append(int(mv))
+            mask_list.append(True)
+        else:
+            mask_list.append(False)
+    if not mapped:
+        return torch.empty(0, dtype=torch.long), torch.zeros_like(labels, dtype=torch.bool)
+    mapped_t = torch.tensor(mapped, dtype=torch.long)
+    mask = torch.tensor(mask_list, dtype=torch.bool)
+    return mapped_t, mask
+
+
+def membership_inference_attack(train_logits_dict, test_logits_dict, class_to_head_index=None):
     if train_logits_dict is None or test_logits_dict is None:
         return {}
 
-    train_logits = torch.tensor(train_logits_dict["logits"], dtype=torch.float32)
-    train_labels = torch.tensor(train_logits_dict["labels"], dtype=torch.long)
-    test_logits = torch.tensor(test_logits_dict["logits"], dtype=torch.float32)
-    test_labels = torch.tensor(test_logits_dict["labels"], dtype=torch.long)
+    train_logits = _to_tensor(train_logits_dict.get("logits"), dtype=torch.float32)
+    train_labels_raw = _to_tensor(train_logits_dict.get("labels"), dtype=torch.long)
+    test_logits = _to_tensor(test_logits_dict.get("logits"), dtype=torch.float32)
+    test_labels_raw = _to_tensor(test_logits_dict.get("labels"), dtype=torch.long)
 
-    if train_logits.size(0) == 0 or test_logits.size(0) == 0:
+    if train_logits is None or test_logits is None:
         return {}
 
-    train_loss = F.cross_entropy(train_logits, train_labels, reduction="none").cpu().numpy()
-    test_loss = F.cross_entropy(test_logits, test_labels, reduction="none").cpu().numpy()
+    result = {}
+    # Compute CE-based AUC if labels are available and mappable
+    if train_labels_raw is not None and test_labels_raw is not None and train_logits.ndim == 2 and test_logits.ndim == 2:
+        num_classes = train_logits.shape[1]
+        train_labels, mask_train = _map_labels(train_labels_raw, class_to_head_index, num_classes)
+        test_labels, mask_test = _map_labels(test_labels_raw, class_to_head_index, num_classes)
+        lg_train_ce = train_logits[mask_train]
+        lg_test_ce = test_logits[mask_test]
+        if lg_train_ce.numel() > 0 and lg_test_ce.numel() > 0:
+            train_loss = F.cross_entropy(lg_train_ce, train_labels, reduction="none").cpu().numpy()
+            test_loss = F.cross_entropy(lg_test_ce, test_labels, reduction="none").cpu().numpy()
+            scores_ce = np.concatenate([-train_loss, -test_loss])
+            labels_ce = np.concatenate([np.ones_like(train_loss), np.zeros_like(test_loss)])
+            try:
+                auc_ce = roc_auc_score(labels_ce, scores_ce)
+            except ValueError:
+                auc_ce = float("nan")
+            result.update({
+                "roc_auc_ce": float(auc_ce),
+                "train_loss_mean": float(train_loss.mean()),
+                "test_loss_mean": float(test_loss.mean()),
+                "train_loss_std": float(train_loss.std()),
+                "test_loss_std": float(test_loss.std()),
+            })
 
-    scores = np.concatenate([-train_loss, -test_loss])
-    labels = np.concatenate([np.ones_like(train_loss), np.zeros_like(test_loss)])
+    # Always compute confidence-based AUC (label-free fallback)
     try:
-        auc = roc_auc_score(labels, scores)
-    except ValueError:
-        auc = float("nan")
+        prob_train = torch.softmax(train_logits, dim=1).max(dim=1).values.cpu().numpy()
+        prob_test = torch.softmax(test_logits, dim=1).max(dim=1).values.cpu().numpy()
+        if prob_train.size > 0 and prob_test.size > 0:
+            scores_conf = np.concatenate([prob_train, prob_test])
+            labels_conf = np.concatenate([np.ones_like(prob_train), np.zeros_like(prob_test)])
+            auc_conf = roc_auc_score(labels_conf, scores_conf)
+            result.update({
+                "roc_auc_conf": float(auc_conf),
+                "train_conf_mean": float(prob_train.mean()),
+                "test_conf_mean": float(prob_test.mean()),
+            })
+    except Exception:
+        pass
 
-    return {
-        "roc_auc": float(auc),
-        "train_loss_mean": float(train_loss.mean()),
-        "test_loss_mean": float(test_loss.mean()),
-        "train_loss_std": float(train_loss.std()),
-        "test_loss_std": float(test_loss.std()),
-    }
+    if not result:
+        result = {"note": "no valid samples after label mapping"}
+    return result
 
 
 def property_inference_attack(client_updates, client_class_counts, class_to_head_index=None):
@@ -147,7 +206,8 @@ def process_round(dump_dir: Path, round_idx: int, metadata, attacks, topk):
         round_report['label_inference'] = label_inference_attack(head_update, topk=topk)
 
     if 'membership' in attacks:
-        round_report['membership_inference'] = membership_inference_attack(train_logits, test_logits)
+        round_report['membership_inference'] = membership_inference_attack(
+            train_logits, test_logits, metadata.get('class_to_head_index'))
 
     if 'property' in attacks:
         round_report['property_inference'] = property_inference_attack(

@@ -9,11 +9,12 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 # TorchText is only required for text datasets. Wrap import to keep image-only
 # runs (e.g., FC100/miniImageNet) working even if torchtext is incompatible
 try:
-    from torchtext.vocab import vocab, Vectors, GloVe  # type: ignore
+    from torchtext.vocab import GloVe  # type: ignore
     _TORCHTEXT_AVAILABLE = True
 except Exception as _e:
     _TORCHTEXT_AVAILABLE = False
     _TORCHTEXT_IMPORT_ERROR = _e
+import os
 from embedding.meta import RNN
 from embedding.auxiliary.factory import get_embedding
 
@@ -951,7 +952,9 @@ if _TORCHTEXT_AVAILABLE:
 
         def __init__(self, finetune_ebd):
             super(WORDEBD, self).__init__()
-            vectors = GloVe(name='42B', dim=300)
+            # Use local cache if available (expects glove.42B.300d.txt at project root)
+            cache_dir = os.path.abspath(os.path.dirname(__file__))
+            vectors = GloVe(name='42B', dim=300, cache=cache_dir)
 
             self.vocab_size, self.embedding_dim = vectors.vectors.size()
             self.embedding_layer = nn.Embedding(

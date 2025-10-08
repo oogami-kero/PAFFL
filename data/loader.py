@@ -6,7 +6,7 @@ from collections import defaultdict
 from tqdm import tqdm
 import numpy as np
 import torch
-from torchtext.vocab import vocab, Vectors, GloVe
+from torchtext.vocab import Vectors, GloVe
 
 from embedding.avg import AVG
 from embedding.cxtebd import CXTEBD
@@ -438,14 +438,10 @@ def load_dataset(datadir, dataset, args=None):
     #vectors = Vectors('wiki.en.vec', cache='./')
     vectors=GloVe(name='42B', dim=300)
     print(vectors)
-    Vocab = vocab( collections.Counter(_read_words(all_data)),  # ,vectors=vectors,
-                  specials=['<pad>', '<unk>'],
-                  min_freq=5)
-    # Vocab.insert_token('<pad>',32135)
-    print('vocab size:', len(Vocab.get_stoi()))
-    Vocab.set_default_index(32137)
-
-    print(len(vectors.stoi))
+    # Older torchtext (0.6.0) does not provide the `vocab` factory used here in
+    # newer versions. We do not need to build an extra vocab object because we
+    # index tokens using vectors.stoi below.
+    print('vocab size:', len(vectors.stoi))
 
 
 
