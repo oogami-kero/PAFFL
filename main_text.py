@@ -160,6 +160,19 @@ def _dump_attack_artifacts_text(ctx, round_idx, global_model, global_state, upda
             client_updates[str(client_id)] = {name: (net_state[name].detach().cpu().clone() - global_state[name].detach().cpu().clone()) for name in head_names}
         torch.save(client_updates, attack_dir / f'{suffix}_client_updates.pt')
 
+    target_device = ctx.get('device', torch.device('cpu'))
+    if isinstance(target_device, str):
+        target_device = torch.device(target_device)
+
+    try:
+        original_device = next(global_model.parameters()).device
+    except StopIteration:
+        original_device = torch.device('cpu')
+    moved = False
+    if target_device is not None and target_device != original_device:
+        global_model.to(target_device)
+        moved = True
+
     global_model.eval()
     try:
         if ctx['probe_test_inputs'] is not None:
@@ -178,6 +191,8 @@ def _dump_attack_artifacts_text(ctx, round_idx, global_model, global_state, upda
                        attack_dir / f'{suffix}_probe_train_logits.pt')
     finally:
         global_model.train()
+        if moved:
+            global_model.to(original_device)
 
 fine_id_coarse_id = {0: 4, 1: 1, 2: 14, 3: 8, 4: 0, 5: 6, 6: 7, 7: 7, 8: 18, 9: 3, 10: 3, 11: 14, 12: 9, 13: 18, 14: 7, 15: 11, 16: 3, 17: 9, 18: 7, 19: 11, 20: 6, 21: 11, 22: 5, 23: 10, 24: 7, 25: 6, 26: 13, 27: 15, 28: 3, 29: 15, 30: 0, 31: 11, 32: 1, 33: 10, 34: 12, 35: 14, 36: 16, 37: 9, 38: 11, 39: 5, 40: 5, 41: 19, 42: 8, 43: 8, 44: 15, 45: 13, 46: 14, 47: 17, 48: 18, 49: 10, 50: 16, 51: 4, 52: 17, 53: 4, 54: 2, 55: 0, 56: 17, 57: 4, 58: 18, 59: 17, 60: 10, 61: 3, 62: 2, 63: 12, 64: 12, 65: 16, 66: 12, 67: 1, 68: 9, 69: 19, 70: 2, 71: 10, 72: 0, 73: 1, 74: 16, 75: 12, 76: 9, 77: 13, 78: 15, 79: 13, 80: 16, 81: 19, 82: 2, 83: 4, 84: 6, 85: 19, 86: 5, 87: 5, 88: 8, 89: 19, 90: 18, 91: 1, 92: 2, 93: 15, 94: 6, 95: 0, 96: 17, 97: 8, 98: 14, 99: 13}
 
@@ -386,16 +401,24 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
         else:
             n_classes=args.N
         
+    text_datasets = {'20newsgroup', 'fewrel', 'huffpost'}
+    use_text_model = args.mode == 'few-shot' and args.method == 'new' and args.dataset in text_datasets
+    shared_ebd = None
+    if use_text_model:
+        shared_ebd = WORDEBD(args.finetune_ebd)
+
     if args.mode=='few-shot' and args.method=='new':
-        if args.dataset=='20newsgroup':
-            ebd=WORDEBD(args.finetune_ebd)
         for net_i in range(n_parties):
             if args.dataset=='FC100' or args.dataset=='miniImageNet':
                 net = ModelFed_Adp(args.model, args.out_dim, n_classes, total_classes, net_configs, args)
             else:
-                net = LSTMAtt(WORDEBD(args.finetune_ebd), args.out_dim, n_classes, total_classes,args)
-            if device == 'cpu':
-                net.to(device)
+                if shared_ebd is not None:
+                    net_ebd = copy.deepcopy(shared_ebd)
+                else:
+                    net_ebd = WORDEBD(args.finetune_ebd)
+                net = LSTMAtt(net_ebd, args.out_dim, n_classes, total_classes,args)
+            if device == 'cpu' or (use_text_model and device != 'cpu'):
+                net.to('cpu')
             else:
                 net = net.cuda()
             nets[net_i] = net
@@ -760,6 +783,9 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     max_value_all_clients=[]
     indices_all_clients=[]
 
+    target_device = torch.device(args.device)
+    use_cuda = target_device.type != 'cpu'
+
     for net_id, net in nets.items():
         print(net_id)
 
@@ -769,6 +795,9 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
         X_train_client=X_train[dataidxs]
         y_train_client=y_train[dataidxs]
 
+        original_device = next(net.parameters()).device
+        if use_cuda:
+            net.to(target_device)
 
         if test_only==False:
             testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client,y_train_client,X_test, y_test,
@@ -788,6 +817,14 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
             max_value_all_clients = torch.stack(max_value_all_clients, 0)
             indices_all_clients = torch.stack(indices_all_clients, 0)
+
+        if use_cuda:
+            net.to(original_device)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        nets[net_id] = net
+
+        if test_only:
             return acc_list, max_value_all_clients, indices_all_clients
 
         avg_acc += testacc
