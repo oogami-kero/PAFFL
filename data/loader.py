@@ -426,17 +426,9 @@ def load_dataset(datadir, dataset, args=None):
     all_data = _load_json('./data/text-data/' + dataset + '.json')
 
     print('Loading word vectors')
-    path = os.path.join('./', 'wiki.en.vec')
-    if not os.path.exists(path):
-        # Download the word vector and save it locally:
-        print('Downloading word vectors')
-        import urllib.request
-        urllib.request.urlretrieve(
-            'https://dl.fbaipublicfiles.com/fasttext/vectors-wiki/wiki.en.vec',
-            path)
-
-    #vectors = Vectors('wiki.en.vec', cache='./')
-    vectors=GloVe(name='42B', dim=300)
+    # Use local GloVe file in project root to avoid downloads.
+    cache_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    vectors = GloVe(name='42B', dim=300, cache=cache_dir)
     print(vectors)
     # Older torchtext (0.6.0) does not provide the `vocab` factory used here in
     # newer versions. We do not need to build an extra vocab object because we

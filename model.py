@@ -17,6 +17,7 @@ except Exception as _e:
 import os
 from embedding.meta import RNN
 from embedding.auxiliary.factory import get_embedding
+from data.vector_loader import load_local_glove_vectors
 
 
 def l2_normalize(x):
@@ -954,7 +955,9 @@ if _TORCHTEXT_AVAILABLE:
             super(WORDEBD, self).__init__()
             # Use local cache if available (expects glove.42B.300d.txt at project root)
             cache_dir = os.path.abspath(os.path.dirname(__file__))
-            vectors = GloVe(name='42B', dim=300, cache=cache_dir)
+            vectors = load_local_glove_vectors(cache_dir, filename='glove.42B.300d.txt', dim=300)
+            if vectors is None:
+                vectors = GloVe(name='42B', dim=300, cache=cache_dir)
 
             self.vocab_size, self.embedding_dim = vectors.vectors.size()
             self.embedding_layer = nn.Embedding(
