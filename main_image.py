@@ -21,7 +21,6 @@ from PIL import Image
 from model import *
 from utils import *
 import warnings
-from torch.cuda.amp import GradScaler, autocast
 
 warnings.filterwarnings('ignore')
 
@@ -403,8 +402,6 @@ def get_args():
     parser.add_argument('--attack_dump_clients', type=int, default=0, help='Dump per-client head updates for attacks (0/1)')
     parser.add_argument('--attack_probe_size', type=int, default=64, help='Number of train/test samples to log as attack probes')
     parser.add_argument('--attack_dir', type=str, default='./attack_dumps', help='Directory to store attack artifacts')
-    parser.add_argument('--amp', action='store_true', default=False,
-                        help='Enable CUDA automatic mixed precision for training (requires CUDA; evaluation stays in float32).')
     args = parser.parse_args()
     return args
 
@@ -504,7 +501,6 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                               weight_decay=args.reg)
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
-    scaler = GradScaler(enabled=args.amp and args.device != 'cpu')
 
     def train_epoch(epoch, mode='train'):
 
@@ -674,87 +670,94 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
             #print(out[:3])
         if mode == 'train':
-            with autocast(enabled=scaler.is_enabled()):
-                X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-                out_sup = X_out_all[:N * K].reshape([N, K, -1]).transpose(0, 1)
+            loss_all=0
+            # all_classify update
+            X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+            out_sup=X_out_all[:N*K].reshape([N,K,-1]).transpose(0,1)
+            out_query=X_out_all[N*K:].reshape([N,Q,-1]).transpose(0,1)
 
-                if args.fine_tune_steps > 0:
-                    loss_all = torch.zeros((), device=X_total_sup.device, dtype=out_all.dtype)
-                    net_new = copy.deepcopy(net)
 
-                    for j in range(args.fine_tune_steps):
-                        with autocast(enabled=False):
-                            X_out_sup, X_transformer_out_sup, out_inner = net_new(X_total_sup)
-                            loss = loss_ce(out_inner, support_labels)
 
-                            net_para = net_new.state_dict()
-                            param_require_grad = {}
-                            for key, param in net_new.named_parameters():
-                                if key == 'few_classify.weight' or key == 'few_classify.bias':
-                                    if param.requires_grad:
-                                        param_require_grad[key] = param
-                            grad = torch.autograd.grad(loss, param_require_grad.values(), allow_unused=True)
-                            for key, grad_ in zip(param_require_grad.keys(), grad):
-                                if grad_ is None:
-                                    continue
-                                net_para[key] = net_para[key] - args.fine_tune_lr * grad_
-                            net_new.load_state_dict(net_para)
+            # _, _, out_all = net(X_total_sup, all_classify=True)
 
-                    with autocast(enabled=scaler.is_enabled()):
-                        X_out_query, _, out = net_new(X_total_query)
-                        X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
 
-                    X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
-                    for j in range(Q):
-                        contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j + 1) % Q],
-                                                                 tau=0.5)
-                        loss_all = loss_all + contras_loss / Q * 0.1
-                    loss_all = loss_all + loss_ce(out_all, y_total)
 
-            if args.fine_tune_steps > 0:
-                out_for_meta = out.float()
-                scaler.scale(loss_all).backward()
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
+            if args.fine_tune_steps>0:
+                net_new = copy.deepcopy(net)
 
-                with autocast(enabled=False):
-                    X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-                    net_para_ori = net.state_dict()
+                for j in range(args.fine_tune_steps):
+                    X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
+                    loss = loss_ce(out, support_labels)
+                    #loss+=loss_ce(out, out_sup_on_N_class)
+                    #loss+=loss_mse(out_sup_on_N_class.softmax(-1),out.softmax(-1))
 
+                    net_para = net_new.state_dict()
                     param_require_grad = {}
                     for key, param in net_new.named_parameters():
-                        if key == 'few_classify.weight' or key == 'few_classify.bias' or 'transformer' in key:
-                            param_require_grad[key] = param
-
-                    loss = loss_ce(out_for_meta, query_labels)
-                    out_sup_on_N_class = out_all[N * K:, transformed_class_list]
-                    out_sup_on_N_class /= out_sup_on_N_class.sum(-1, keepdim=True)
-                    loss = loss + loss_ce(out_for_meta, out_sup_on_N_class) * 0.1
-                    grad = torch.autograd.grad(loss, param_require_grad.values())
+                        if key == 'few_classify.weight' or key == 'few_classify.bias':
+                            # if key !='all_classify.weight' and key !='all_classify.bias':
+                            if param.requires_grad:
+                                param_require_grad[key] = param
+                    grad = torch.autograd.grad(loss, param_require_grad.values(), allow_unused=True)
                     for key, grad_ in zip(param_require_grad.keys(), grad):
-                        net_para_ori[key] = net_para_ori[key] - args.meta_lr * grad_
-                    net.load_state_dict(net_para_ori)
+                        if grad_ == None: continue
+                        net_para[key] = net_para[key] - args.fine_tune_lr * grad_
+                    # net_para = list(
+                    #                map(lambda p: p[1] - fine_tune_lr * p[0], zip(grad, net_para)))
+                    # net_para={key:value for key, value in zip(net.state_dict().keys(),net.state_dict().values())}
+                    net_new.load_state_dict(net_para)
 
-                if np.random.rand() < 0.005:
-                    print('loss: {:.4f}'.format(loss_all.item()))
+                X_out_query, _, out = net_new(X_total_query)
+                X_out_sup, X_transformer_out_sup, _ = net_new(X_total_sup)
 
-                acc_train = (torch.argmax(out_all, -1) == y_total).float().mean().item()
+                X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
+                #############################
+                # Q=K here update for all-model
+                for j in range(Q):
+                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q],
+                                                             tau=0.5)
+                    loss_all += contras_loss / Q * 0.1
+                loss_all += loss_ce(out_all, y_total)
+                loss_all.backward()
+                optimizer.step()
+                ############################
 
-                del net_new, X_out_query, out
-            else:
-                with autocast(enabled=scaler.is_enabled()):
-                    X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
-                acc_train = (torch.argmax(out_all, -1) == y_total).float().mean().item()
+                X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0), all_classify=True)
+                ###################################
+                # few_classify update
+                net_para_ori=net.state_dict()
 
-            del X_out_all, out_all
+                param_require_grad={}
+                for key, param in net_new.named_parameters():
+                    if key=='few_classify.weight' or key=='few_classify.bias' or 'transformer' in key:
+                    #if key != 'module.all_classify.weight' and key != 'module.all_classify.bias':
+                        param_require_grad[key]=param
+
+                #meta-update few-classifier on query
+                loss = loss_ce(out, query_labels)
+                out_sup_on_N_class = out_all[N * K:, transformed_class_list]
+                out_sup_on_N_class/=out_sup_on_N_class.sum(-1,keepdim=True)
+                loss+=loss_ce(out,out_sup_on_N_class)*0.1
+                grad = torch.autograd.grad(loss, param_require_grad.values())
+                for key, grad_ in zip(param_require_grad.keys(), grad):
+                    net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
+                net.load_state_dict(net_para_ori)
+                ##################################
+                del net_new,X_out_query, out
+
+            if np.random.rand() < 0.005:
+                print('loss: {:.4f}'.format(loss_all.item()))
+
+
+            acc_train = (torch.argmax(out_all, -1) == y_total).float().mean().item()
+
+            del X_out_all,  out_all
             return acc_train
 
         else:
             use_logistic=True
 
             if use_logistic:
-                # Keep evaluation outside autocast so CPU probes remain full precision.
                 with torch.no_grad():
                     X_out_all, x_all, out_all = net(torch.cat([X_total_sup, X_total_query], 0))
                     X_out_sup=X_out_all[:N*K]
