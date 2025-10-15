@@ -160,19 +160,6 @@ def _dump_attack_artifacts_text(ctx, round_idx, global_model, global_state, upda
             client_updates[str(client_id)] = {name: (net_state[name].detach().cpu().clone() - global_state[name].detach().cpu().clone()) for name in head_names}
         torch.save(client_updates, attack_dir / f'{suffix}_client_updates.pt')
 
-    target_device = ctx.get('device', torch.device('cpu'))
-    if isinstance(target_device, str):
-        target_device = torch.device(target_device)
-
-    try:
-        original_device = next(global_model.parameters()).device
-    except StopIteration:
-        original_device = torch.device('cpu')
-    moved = False
-    if target_device is not None and target_device != original_device:
-        global_model.to(target_device)
-        moved = True
-
     global_model.eval()
     try:
         if ctx['probe_test_inputs'] is not None:
@@ -191,8 +178,6 @@ def _dump_attack_artifacts_text(ctx, round_idx, global_model, global_state, upda
                        attack_dir / f'{suffix}_probe_train_logits.pt')
     finally:
         global_model.train()
-        if moved:
-            global_model.to(original_device)
 
 fine_id_coarse_id = {0: 4, 1: 1, 2: 14, 3: 8, 4: 0, 5: 6, 6: 7, 7: 7, 8: 18, 9: 3, 10: 3, 11: 14, 12: 9, 13: 18, 14: 7, 15: 11, 16: 3, 17: 9, 18: 7, 19: 11, 20: 6, 21: 11, 22: 5, 23: 10, 24: 7, 25: 6, 26: 13, 27: 15, 28: 3, 29: 15, 30: 0, 31: 11, 32: 1, 33: 10, 34: 12, 35: 14, 36: 16, 37: 9, 38: 11, 39: 5, 40: 5, 41: 19, 42: 8, 43: 8, 44: 15, 45: 13, 46: 14, 47: 17, 48: 18, 49: 10, 50: 16, 51: 4, 52: 17, 53: 4, 54: 2, 55: 0, 56: 17, 57: 4, 58: 18, 59: 17, 60: 10, 61: 3, 62: 2, 63: 12, 64: 12, 65: 16, 66: 12, 67: 1, 68: 9, 69: 19, 70: 2, 71: 10, 72: 0, 73: 1, 74: 16, 75: 12, 76: 9, 77: 13, 78: 15, 79: 13, 80: 16, 81: 19, 82: 2, 83: 4, 84: 6, 85: 19, 86: 5, 87: 5, 88: 8, 89: 19, 90: 18, 91: 1, 92: 2, 93: 15, 94: 6, 95: 0, 96: 17, 97: 8, 98: 14, 99: 13}
 
@@ -262,7 +247,7 @@ def InforNCE_Loss(anchor, sample, tau, all_negative=False, temperature_matrix=No
 
     assert anchor.shape[0] == sample.shape[0]
 
-    pos_mask = torch.eye(anchor.shape[0], dtype=torch.float).cuda()
+    pos_mask = torch.eye(anchor.shape[0], dtype=torch.float, device=anchor.device)
     neg_mask = 1. - pos_mask
     sim = _similarity(anchor, sample / temperature_matrix if temperature_matrix != None else sample) / tau
     exp_sim = torch.exp(sim) * (pos_mask + neg_mask)
@@ -402,25 +387,26 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
             n_classes=args.N
         
     text_datasets = {'20newsgroup', 'fewrel', 'huffpost'}
-    use_text_model = args.mode == 'few-shot' and args.method == 'new' and args.dataset in text_datasets
-    shared_ebd = None
-    if use_text_model:
-        shared_ebd = WORDEBD(args.finetune_ebd)
+    shared_word_embedding = None
+    if (args.mode == 'few-shot' and args.method == 'new'
+            and args.dataset in text_datasets and not args.finetune_ebd):
+        shared_word_embedding = WORDEBD(args.finetune_ebd)
+        if device != 'cpu':
+            shared_word_embedding = shared_word_embedding.to(device)
 
     if args.mode=='few-shot' and args.method=='new':
         for net_i in range(n_parties):
             if args.dataset=='FC100' or args.dataset=='miniImageNet':
                 net = ModelFed_Adp(args.model, args.out_dim, n_classes, total_classes, net_configs, args)
             else:
-                if shared_ebd is not None:
-                    net_ebd = copy.deepcopy(shared_ebd)
+                if shared_word_embedding is not None:
+                    net = LSTMAtt(shared_word_embedding, args.out_dim, n_classes, total_classes,args)
                 else:
-                    net_ebd = WORDEBD(args.finetune_ebd)
-                net = LSTMAtt(net_ebd, args.out_dim, n_classes, total_classes,args)
-            if device == 'cpu' or (use_text_model and device != 'cpu'):
-                net.to('cpu')
+                    net = LSTMAtt(WORDEBD(args.finetune_ebd), args.out_dim, n_classes, total_classes,args)
+            if device == 'cpu':
+                net.to(device)
             else:
-                net = net.cuda()
+                net = net.to('cuda') if device != 'cpu' else net.to('cpu')
             nets[net_i] = net
 
             
@@ -523,8 +509,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         for i in range(N):
             query_labels[i * Q:(i + 1) * Q] = i
         if args.device != 'cpu':
-            support_labels = support_labels.cuda()
-            query_labels = query_labels.cuda()
+            support_labels = support_labels.to(device)
+            query_labels = query_labels.to(device)
 
         if mode == 'train':
             if args.dataset=='FC100':
@@ -591,7 +577,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
 
 
-                y_total = torch.cat([torch.cat(y_sup, 0), torch.cat(y_query, 0)], 0).long().cuda()
+                y_total = torch.cat([torch.cat(y_sup, 0), torch.cat(y_query, 0)], 0).long().to(device)
         #y_total=torch.tensor(np.concatenate([np.concatenate(y_sup, 0),np.concatenate(y_query, 0)],0)).cuda()
         
         X_total_sup=np.concatenate(X_total_sup, 0)
@@ -603,14 +589,14 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             X_total_transformed_query=[]
             for i in range(X_total_sup.shape[0]):
                 X_total_transformed_sup.append(X_transform(X_total_sup[i]))
-            X_total_sup=torch.stack(X_total_transformed_sup,0).cuda()
+            X_total_sup=torch.stack(X_total_transformed_sup,0).to(device)
 
             for i in range(X_total_query.shape[0]):
                 X_total_transformed_query.append(X_transform(X_total_query[i]))
-            X_total_query=torch.stack(X_total_transformed_query,0).cuda()
+            X_total_query=torch.stack(X_total_transformed_query,0).to(device)
         else:
-            X_total_sup=torch.tensor(X_total_sup).cuda()
-            X_total_query=torch.tensor(X_total_query).cuda()
+            X_total_sup=torch.tensor(X_total_sup).to(device)
+            X_total_query=torch.tensor(X_total_query).to(device)
 
 
 
@@ -714,7 +700,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                     query_ys_pred = clf.predict(query_features)
 
-                    out=torch.tensor(clf.predict_proba(query_features)).cuda()
+                    out=torch.tensor(clf.predict_proba(query_features)).to(device)
 
                     acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
                     max_value, index=torch.max(out,-1)
@@ -783,9 +769,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
     max_value_all_clients=[]
     indices_all_clients=[]
 
-    target_device = torch.device(args.device)
-    use_cuda = target_device.type != 'cpu'
-
     for net_id, net in nets.items():
         print(net_id)
 
@@ -795,9 +778,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
         X_train_client=X_train[dataidxs]
         y_train_client=y_train[dataidxs]
 
-        original_device = next(net.parameters()).device
-        if use_cuda:
-            net.to(target_device)
 
         if test_only==False:
             testacc = train_net_few_shot_new(net_id, net, n_epoch, args.lr, args.optimizer, args, X_train_client,y_train_client,X_test, y_test,
@@ -817,14 +797,6 @@ def local_train_net_few_shot(nets, args, net_dataidx_map, X_train, y_train, X_te
 
             max_value_all_clients = torch.stack(max_value_all_clients, 0)
             indices_all_clients = torch.stack(indices_all_clients, 0)
-
-        if use_cuda:
-            net.to(original_device)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        nets[net_id] = net
-
-        if test_only:
             return acc_list, max_value_all_clients, indices_all_clients
 
         avg_acc += testacc
@@ -929,8 +901,8 @@ if __name__ == '__main__':
     for i in range(N):
         query_labels[i * Q:(i + 1) * Q] = i
     if args.device!='cpu':
-        support_labels=support_labels.cuda()
-        query_labels=query_labels.cuda()
+        support_labels=support_labels.to(device)
+        query_labels=query_labels.to(device)
     
     
     n_party_per_round = int(args.n_parties * args.sample_fraction)
@@ -947,9 +919,10 @@ if __name__ == '__main__':
 
 
     logger.info("Initializing nets")
-    nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.n_parties, args, device='gpu')
+    _dev_flag = 'cpu' if str(args.device).lower().startswith('cpu') else 'gpu'
+    nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.n_parties, args, device=_dev_flag)
 
-    global_models, global_model_meta_data, global_layer_type = init_nets(args.net_config, 1, args, device='gpu')
+    global_models, global_model_meta_data, global_layer_type = init_nets(args.net_config, 1, args, device=_dev_flag)
     global_model = global_models[0]
     attack_ctx = _init_attack_context_text(args, device, global_model, X_train, y_train, X_test, y_test, traindata_cls_counts)
     n_comm_rounds = args.comm_round
@@ -1011,26 +984,18 @@ if __name__ == '__main__':
 
             local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
 
-            # Aggregate with normalized client weights and keep a copy of the pre-update state for attack dumps
-            client_weights = {r: len(net_dataidx_map[r]) / total_data_points for r in range(args.n_parties)}
-            selected_weight_sum = sum([client_weights[cid] for cid in nets_this_round.keys()])
-            if selected_weight_sum == 0:
-                selected_weight_sum = 1.0
-
+            # Aggregate client weights (FedAvg-style) and keep a copy of the pre-update state for attack dumps
             global_state = copy.deepcopy(global_model.state_dict())
             global_w = copy.deepcopy(global_state)
 
-            first_client = True
-            for client_id, net in nets_this_round.items():
+            for net_idx, net in enumerate(nets_this_round.values()):
                 net_state = net.state_dict()
-                weight = client_weights[client_id] / selected_weight_sum
-                if first_client:
+                if net_idx == 0:
                     for key in net_state:
-                        global_w[key] = net_state[key] * weight
-                    first_client = False
+                        global_w[key] = net_state[key] * fed_avg_freqs[net_idx]
                 else:
                     for key in net_state:
-                        global_w[key] += net_state[key] * weight
+                        global_w[key] += net_state[key] * fed_avg_freqs[net_idx]
 
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
@@ -1042,7 +1007,6 @@ if __name__ == '__main__':
             global_model.load_state_dict(global_w)
             if attack_ctx and round in attack_ctx['rounds']:
                 _dump_attack_artifacts_text(attack_ctx, round, global_model, global_state, global_w, nets_this_round)
-
 
             print('>> Current Round: {}'.format(round))
             logger.info('>> Current Round: {}'.format(round))

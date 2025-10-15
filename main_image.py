@@ -20,21 +20,10 @@ from PIL import Image
 
 from model import *
 from utils import *
+from dp_utils import RDPAccountant
 import warnings
 
 warnings.filterwarnings('ignore')
-
-
-def _compute_gaussian_dp_epsilon(noise_multiplier, steps, delta, orders=None):
-    if orders is None:
-        orders = [1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 32.0, 64.0]
-    if noise_multiplier == 0:
-        return float('inf'), orders[0]
-    rdp = [steps * order / (2 * noise_multiplier ** 2) for order in orders]
-    eps = [rdp_i + math.log(1 / delta) / (order - 1) for rdp_i, order in zip(rdp, orders)]
-    min_eps = min(eps)
-    best_order = orders[eps.index(min_eps)]
-    return min_eps, best_order
 
 
 _HEAD_PARAM_PREFIXES = ('l1', 'l2', 'all_classify')
@@ -210,19 +199,6 @@ def _dump_attack_artifacts_image(ctx, round_idx, global_model, global_state, upd
                        attack_dir / f'{suffix}_probe_train_logits.pt')
     finally:
         global_model.train()
-
-
-def _compute_gaussian_dp_epsilon(noise_multiplier, steps, delta, orders=None):
-    if orders is None:
-        orders = [1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 32.0, 64.0]
-    if noise_multiplier == 0:
-        return float('inf'), orders[0]
-    rdp = [steps * order / (2 * noise_multiplier ** 2) for order in orders]
-    eps = [rdp_i + math.log(1 / delta) / (order - 1) for rdp_i, order in zip(rdp, orders)]
-    min_eps = min(eps)
-    best_order = orders[eps.index(min_eps)]
-    return min_eps, best_order
-
 fine_id_coarse_id = {0: 4, 1: 1, 2: 14, 3: 8, 4: 0, 5: 6, 6: 7, 7: 7, 8: 18, 9: 3, 10: 3, 11: 14, 12: 9, 13: 18, 14: 7, 15: 11, 16: 3, 17: 9, 18: 7, 19: 11, 20: 6, 21: 11, 22: 5, 23: 10, 24: 7, 25: 6, 26: 13, 27: 15, 28: 3, 29: 15, 30: 0, 31: 11, 32: 1, 33: 10, 34: 12, 35: 14, 36: 16, 37: 9, 38: 11, 39: 5, 40: 5, 41: 19, 42: 8, 43: 8, 44: 15, 45: 13, 46: 14, 47: 17, 48: 18, 49: 10, 50: 16, 51: 4, 52: 17, 53: 4, 54: 2, 55: 0, 56: 17, 57: 4, 58: 18, 59: 17, 60: 10, 61: 3, 62: 2, 63: 12, 64: 12, 65: 16, 66: 12, 67: 1, 68: 9, 69: 19, 70: 2, 71: 10, 72: 0, 73: 1, 74: 16, 75: 12, 76: 9, 77: 13, 78: 15, 79: 13, 80: 16, 81: 19, 82: 2, 83: 4, 84: 6, 85: 19, 86: 5, 87: 5, 88: 8, 89: 19, 90: 18, 91: 1, 92: 2, 93: 15, 94: 6, 95: 0, 96: 17, 97: 8, 98: 14, 99: 13}
 
 coarse_id_fine_id = {0: [4, 30, 55, 72, 95], 1: [1, 32, 67, 73, 91], 2: [54, 62, 70, 82, 92], 3: [9, 10, 16, 28, 61], 4: [0, 51, 53, 57, 83], 5: [22, 39, 40, 86, 87], 6: [5, 20, 25, 84, 94], 7: [6, 7, 14, 18, 24], 8: [3, 42, 43, 88, 97], 9: [12, 17, 37, 68, 76], 10: [23, 33, 49, 60, 71], 11: [15, 19, 21, 31, 38], 12: [34, 63, 64, 66, 75], 13: [26, 45, 77, 79, 99], 14: [2, 11, 35, 46, 98], 15: [27, 29, 44, 78, 93], 16: [36, 50, 65, 74, 80], 17: [47, 52, 56, 59, 96], 18: [8, 13, 48, 58, 90], 19: [41, 69, 81, 85, 89]}
@@ -299,7 +275,7 @@ def InforNCE_Loss(anchor, sample, tau, all_negative=False, temperature_matrix=No
 
     assert anchor.shape[0] == sample.shape[0]
 
-    pos_mask = torch.eye(anchor.shape[0], dtype=torch.float).cuda()
+    pos_mask = torch.eye(anchor.shape[0], dtype=torch.float, device=anchor.device)
     neg_mask = 1. - pos_mask
     sim = _similarity(anchor, sample / temperature_matrix if temperature_matrix != None else sample) / tau
     exp_sim = torch.exp(sim) * (pos_mask + neg_mask)
@@ -395,6 +371,17 @@ def get_args():
     parser.add_argument('--dp_noise_multiplier', type=float, default=1.0, help='Gaussian noise multiplier (sigma) for DP')
     parser.add_argument('--dp_seed', type=int, default=0, help='Seed for DP noise (set negative to use global RNG state)')
     parser.add_argument('--dp_target', type=str, default='full', choices=['full', 'head'], help='Scope of parameters receiving DP noise')
+    parser.add_argument('--dp_clip_mode', type=str, default='global', choices=['global', 'tensor', 'group'], help='Clipping mode for DP updates')
+    parser.add_argument('--dp_delta', type=float, default=-1.0, help='Override DP delta; negative uses default N^-1.1')
+    parser.add_argument('--dp_head_scope', type=str, default='full', choices=['full', 'logits'], help='When target=head, DP on full head or logits only')
+    parser.add_argument('--head_train_scope', type=str, default='all', choices=['all', 'logits'], help='Train all head layers or logits only')
+    parser.add_argument('--head_grad_clip', type=float, default=1.0, help='Max-norm gradient clip for head params (<=0 disables)')
+    parser.add_argument('--dp_clip_norm_head', type=float, default=None, help='Override clip norm for head group (group mode)')
+    parser.add_argument('--dp_clip_norm_feat', type=float, default=None, help='Override clip norm for features group (group mode)')
+    parser.add_argument('--dp_adaptive', type=int, default=1, help='Enable adaptive per-tensor/group clipping via EMA of quantiles (0/1)')
+    parser.add_argument('--dp_quantile', type=float, default=0.8, help='Quantile of per-client norms to target for adaptive clipping')
+    parser.add_argument('--dp_ema_beta', type=float, default=0.2, help='EMA factor for adaptive clip norms')
+    parser.add_argument('--train_expand_N', type=int, default=4, help='Multiply N in train episodes (e.g., FC100 default 4)')
     parser.add_argument('--freeze_backbone_after', type=int, default=-1, help='Round index after which backbone features stop training (-1 disables)')
     parser.add_argument('--use_transform_layer', type=int, default=0, help='Enable client-side transform layer before shared head (0/1)')
     parser.add_argument('--attack_dump', type=int, default=0, help='Enable attack artifact dumping (0/1)')
@@ -470,6 +457,8 @@ def get_dp_parameter_names(model, target='full'):
     excluded_substrings = ('few_classify', 'transformer', 'transform_layer')
     head_includes = ('l1', 'l2', 'all_classify')
     names = []
+    # Only tensors returned here participate in DP aggregation; everything else remains
+    # unchanged on the server for DP-enabled rounds.
     for name, _ in model.named_parameters():
         if target == 'head':
             if not any(name.startswith(prefix) or prefix in name for prefix in head_includes):
@@ -491,14 +480,18 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
     #logger.info('n_training: %d' % X_train_client.shape[0])
     #logger.info('n_test: %d' % X_test.shape[0])
     
+    # Build optimizer param list according to head training scope
+    if getattr(args, 'head_train_scope', 'all') == 'logits':
+        param_list = [p for n, p in net.named_parameters() if 'all_classify' in n and p.requires_grad]
+    else:
+        param_list = list(filter(lambda p: p.requires_grad, net.parameters()))
+
     if args_optimizer == 'adam':
-        optimizer = optim.Adam( net.parameters(), lr=lr, weight_decay=args.reg)
+        optimizer = optim.Adam(param_list, lr=lr, weight_decay=args.reg)
     elif args_optimizer == 'amsgrad':
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
-                               amsgrad=True)
+        optimizer = optim.Adam(param_list, lr=lr, weight_decay=args.reg, amsgrad=True)
     elif args_optimizer == 'sgd':
-        optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=0.05, momentum=0.9,
-                              weight_decay=args.reg)
+        optimizer = optim.SGD(param_list, lr=0.05, momentum=0.9, weight_decay=args.reg)
     loss_ce = nn.CrossEntropyLoss()
     loss_mse = nn.MSELoss()
 
@@ -515,11 +508,11 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 K = 5#args.K
                 Q = args.Q
             elif args.dataset=='FC100':
-                N=args.N*4
+                N=args.N*max(1, int(getattr(args, 'train_expand_N', 4)))
                 K=2
                 Q=2
             elif args.dataset=='miniImageNet':
-                N=args.N*4
+                N=args.N*max(1, int(getattr(args, 'train_expand_N', 4)))
                 K=2
                 Q=2
             else:
@@ -573,8 +566,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
         for i in range(N):
             query_labels[i * Q:(i + 1) * Q] = i
         if args.device != 'cpu':
-            support_labels = support_labels.cuda()
-            query_labels = query_labels.cuda()
+            support_labels = support_labels.to(device)
+            query_labels = query_labels.to(device)
 
         if mode == 'train':
             if args.dataset=='FC100':
@@ -641,7 +634,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
 
 
-                y_total = torch.cat([torch.cat(y_sup, 0), torch.cat(y_query, 0)], 0).long().cuda()
+                y_total = torch.cat([torch.cat(y_sup, 0), torch.cat(y_query, 0)], 0).long().to(device)
         #y_total=torch.tensor(np.concatenate([np.concatenate(y_sup, 0),np.concatenate(y_query, 0)],0)).cuda()
         
         X_total_sup=np.concatenate(X_total_sup, 0)
@@ -653,14 +646,14 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             X_total_transformed_query=[]
             for i in range(X_total_sup.shape[0]):
                 X_total_transformed_sup.append(X_transform(X_total_sup[i]))
-            X_total_sup=torch.stack(X_total_transformed_sup,0).cuda()
+            X_total_sup=torch.stack(X_total_transformed_sup,0).to(device)
 
             for i in range(X_total_query.shape[0]):
                 X_total_transformed_query.append(X_transform(X_total_query[i]))
-            X_total_query=torch.stack(X_total_transformed_query,0).cuda()
+            X_total_query=torch.stack(X_total_transformed_query,0).to(device)
         else:
-            X_total_sup=torch.tensor(X_total_sup).cuda()
-            X_total_query=torch.tensor(X_total_query).cuda()
+            X_total_sup=torch.tensor(X_total_sup).to(device)
+            X_total_query=torch.tensor(X_total_query).to(device)
 
 
 
@@ -719,6 +712,13 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                     loss_all += contras_loss / Q * 0.1
                 loss_all += loss_ce(out_all, y_total)
                 loss_all.backward()
+                # Clip gradients on head params to stabilize and reduce update norm
+                if getattr(args, 'head_grad_clip', 1.0) and args.head_grad_clip > 0:
+                    if getattr(args, 'head_train_scope', 'all') == 'logits':
+                        clip_params = [p for n, p in net.named_parameters() if 'all_classify' in n and p.grad is not None]
+                    else:
+                        clip_params = [p for p in net.parameters() if p.grad is not None]
+                    torch.nn.utils.clip_grad_norm_(clip_params, max_norm=args.head_grad_clip)
                 optimizer.step()
                 ############################
 
@@ -776,7 +776,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                     query_ys_pred = clf.predict(query_features)
 
-                    out=torch.tensor(clf.predict_proba(query_features)).cuda()
+                    out=torch.tensor(clf.predict_proba(query_features)).to(device)
 
                     acc_train = (torch.argmax(out, -1) == query_labels).float().mean().item()
                     max_value, index=torch.max(out,-1)
@@ -998,8 +998,8 @@ if __name__ == '__main__':
     for i in range(N):
         query_labels[i * Q:(i + 1) * Q] = i
     if args.device!='cpu':
-        support_labels=support_labels.cuda()
-        query_labels=query_labels.cuda()
+        support_labels=support_labels.to(device)
+        query_labels=query_labels.to(device)
     
     
     n_party_per_round = int(args.n_parties * args.sample_fraction)
@@ -1016,9 +1016,11 @@ if __name__ == '__main__':
 
 
     logger.info("Initializing nets")
-    nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.n_parties, args, device='gpu')
+    # Honor CPU selection; otherwise use GPU path
+    _dev_flag = 'cpu' if str(args.device).lower().startswith('cpu') else 'gpu'
+    nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.n_parties, args, device=_dev_flag)
 
-    global_models, global_model_meta_data, global_layer_type = init_nets(args.net_config, 1, args, device='gpu')
+    global_models, global_model_meta_data, global_layer_type = init_nets(args.net_config, 1, args, device=_dev_flag)
     global_model = global_models[0]
     attack_ctx = _init_attack_context_image(args, device, global_model, X_train, y_train, X_test, y_test, traindata_cls_counts)
     n_comm_rounds = args.comm_round
@@ -1037,20 +1039,36 @@ if __name__ == '__main__':
         best_confident_acc=0
 
         total_data_points = sum([len(net_dataidx_map[r]) for r in range(args.n_parties)])
-        client_weights = {r: len(net_dataidx_map[r]) / total_data_points for r in range(args.n_parties)}
-        dp_delta = 1.0 / max(1, X_train.shape[0])
+        N = max(1, args.n_parties)
+        dp_delta = args.dp_delta if getattr(args, 'dp_delta', -1.0) and args.dp_delta > 0 else N ** (-1.1)
+        dp_orders = [2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0, 32.0, 64.0]
 
         if args.dp_enable:
             dp_param_names = get_dp_parameter_names(global_model, target=args.dp_target)
+            # Restrict head DP scope to logits only when requested
+            if args.dp_target == 'head' and getattr(args, 'dp_head_scope', 'full') == 'logits':
+                dp_param_names = [n for n in dp_param_names if n.startswith('all_classify') or 'all_classify' in n]
+            accountant = RDPAccountant(dp_orders)
             logger.info(
-                'DP enabled on {} parameter tensors (target={}, clip_norm={}, noise_multiplier={})'.format(
-                    len(dp_param_names), args.dp_target, args.dp_clip_norm, args.dp_noise_multiplier))
+                f"DP enabled on {len(dp_param_names)} parameter tensors (target={args.dp_target}, "
+                f"clip_norm={args.dp_clip_norm:.6f}, noise_multiplier={args.dp_noise_multiplier:.6f}, delta={dp_delta:.2e})")
             dp_seed_base = args.dp_seed if args.dp_seed >= 0 else None
         else:
             dp_param_names = []
+            accountant = None
             dp_seed_base = None
 
         backbone_frozen = False
+        # Adaptive DP clip state per tensor/group
+        dp_clip_state = {}
+        if args.dp_enable:
+            for k in dp_param_names:
+                dp_clip_state[k] = {
+                    'C': float(args.dp_clip_norm),
+                }
+            # Group-wise adaptive states
+            dp_clip_state['__HEAD__'] = {'C': float(args.dp_clip_norm)}
+            dp_clip_state['__FEAT__'] = {'C': max(float(args.dp_clip_norm) / 5.0, 0.5)}
 
         for round in range(n_comm_rounds):
             #logger.info("in comm round:" + str(round))
@@ -1106,59 +1124,195 @@ if __name__ == '__main__':
 
             local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
 
-            selected_weight_sum = sum([client_weights[cid] for cid in nets_this_round.keys()])
-            if selected_weight_sum == 0:
-                selected_weight_sum = 1.0
-
             global_state = copy.deepcopy(global_model.state_dict())
             global_w = copy.deepcopy(global_state)
 
-            if args.dp_enable:
-                dp_aggregated_update = OrderedDict(
-                    (key, torch.zeros_like(global_state[key])) for key in dp_param_names)
+            m = len(nets_this_round)
+            if m == 0:
+                logger.warning('No clients selected in round %d; skipping aggregation', round)
+                continue
 
-            first_client = True
-            for client_id, net in nets_this_round.items():
-                net_state = net.state_dict()
-                weight = client_weights[client_id] / selected_weight_sum
+            equal_weight = 1.0 / m
 
-                if first_client:
-                    for key in net_state:
-                        global_w[key] = net_state[key] * weight
-                    first_client = False
-                else:
-                    for key in net_state:
-                        global_w[key] += net_state[key] * weight
-
-                if args.dp_enable and dp_param_names:
-                    client_update = OrderedDict()
-                    for key in dp_param_names:
-                        client_update[key] = net_state[key] - global_state[key]
-                    if client_update:
-                        flat_update = torch.cat([tensor.reshape(-1) for tensor in client_update.values()])
-                        update_norm = torch.norm(flat_update, p=2)
-                        clip_coef = 1.0
-                        if update_norm > args.dp_clip_norm:
-                            clip_coef = args.dp_clip_norm / (update_norm + 1e-12)
-                        for key in dp_param_names:
-                            dp_aggregated_update[key] += client_update[key] * clip_coef * weight
-
-            if args.dp_enable and dp_param_names:
-                noise_scale = args.dp_noise_multiplier * args.dp_clip_norm
-                for idx, key in enumerate(dp_param_names):
-                    if dp_seed_base is not None:
-                        device = global_state[key].device
-                        local_generator = torch.Generator(device=device)
-                        local_generator.manual_seed(dp_seed_base + round * 9973 + idx)
-                        noise = torch.randn(
-                            dp_aggregated_update[key].shape,
-                            device=device,
-                            dtype=dp_aggregated_update[key].dtype,
-                            generator=local_generator,
-                        ) * noise_scale
+            if not args.dp_enable or not dp_param_names:
+                first_client = True
+                for net in nets_this_round.values():
+                    net_state = net.state_dict()
+                    if first_client:
+                        for key in net_state:
+                            global_w[key] = net_state[key] * equal_weight
+                        first_client = False
                     else:
-                        noise = torch.randn_like(dp_aggregated_update[key]) * noise_scale
-                    global_w[key] = global_state[key] + dp_aggregated_update[key] + noise
+                        for key in net_state:
+                            global_w[key] += net_state[key] * equal_weight
+                dp_noise_std = 0.0
+                epsilon_round = float('inf')
+                epsilon_total = float('inf')
+                alpha_round = None
+                alpha_total = None
+                snr = float('inf')
+                clip_rate = 0.0
+                q = min(1.0, m / N)
+            else:
+                clip_norm = args.dp_clip_norm
+                sigma = args.dp_noise_multiplier
+                dp_updates = OrderedDict((key, torch.zeros_like(global_state[key])) for key in dp_param_names)
+                clip_events = 0
+
+                clip_mode = getattr(args, 'dp_clip_mode', 'global')
+                # Group mapping for group mode
+                def is_head(name: str) -> bool:
+                    return name.startswith('l1') or name.startswith('l2') or name.startswith('all_classify')
+
+                # Initialize group Cs (may be adapted below)
+                C_head = args.dp_clip_norm_head if args.dp_clip_norm_head is not None else dp_clip_state.get('__HEAD__',{}).get('C', clip_norm)
+                C_feat = args.dp_clip_norm_feat if args.dp_clip_norm_feat is not None else dp_clip_state.get('__FEAT__',{}).get('C', max(clip_norm/5.0, 0.5))
+
+                # For logging: a representative noise_std value
+                if clip_mode == 'global' or clip_mode == 'tensor':
+                    dp_noise_std = sigma * clip_norm / m if m > 0 else 0.0
+                else:  # group
+                    # Log the head group's effective noise std as representative
+                    dp_noise_std = sigma * C_head / m if m > 0 else 0.0
+
+                # Collect per-client per-tensor norms for adaptive clipping
+                adaptive = getattr(args, 'dp_adaptive', 1) == 1
+                per_key_norms = {k: [] for k in dp_param_names}
+
+                for client_id, net in nets_this_round.items():
+                    net_state = net.state_dict()
+                    client_update = {key: net_state[key] - global_state[key] for key in dp_param_names}
+
+                    if clip_mode == 'global':
+                        flat = torch.cat([t.reshape(-1) for t in client_update.values()]) if client_update else torch.zeros(1)
+                        norm = float(torch.norm(flat, p=2).item())
+                        if adaptive:
+                            # Use current clip_norm; collect per-key norms for later
+                            for k, t in client_update.items():
+                                per_key_norms[k].append(float(torch.norm(t.reshape(-1), p=2).item()))
+                        coef = 1.0 if norm == 0.0 else min(1.0, clip_norm / (norm + 1e-12))
+                        if coef < 0.999999:
+                            clip_events += 1
+                        for k, t in client_update.items():
+                            dp_updates[k] += t * coef * equal_weight
+
+                    elif clip_mode == 'tensor':
+                        clipped_any = False
+                        for k, t in client_update.items():
+                            nrm = float(torch.norm(t.reshape(-1), p=2).item())
+                            if adaptive:
+                                per_key_norms[k].append(nrm)
+                            # Use per-tensor C if adaptive; else global clip_norm
+                            Ck = dp_clip_state.get(k, {}).get('C', clip_norm) if adaptive else clip_norm
+                            coef = 1.0 if nrm == 0.0 else min(1.0, Ck / (nrm + 1e-12))
+                            if coef < 0.999999:
+                                clipped_any = True
+                            dp_updates[k] += t * coef * equal_weight
+                        if clipped_any:
+                            clip_events += 1
+
+                    elif clip_mode == 'group':
+                        # Compute per-group coef and apply to tensors by group
+                        # Head group
+                        head_vec = torch.cat([client_update[k].reshape(-1) for k in client_update if is_head(k)]) if any(is_head(k) for k in client_update) else None
+                        feat_vec = torch.cat([client_update[k].reshape(-1) for k in client_update if not is_head(k)]) if any((not is_head(k)) for k in client_update) else None
+                        head_coef = 1.0
+                        feat_coef = 1.0
+                        clipped_any = False
+                        if head_vec is not None:
+                            hn = float(torch.norm(head_vec, p=2).item())
+                            head_C = C_head
+                            if adaptive:
+                                for k in client_update:
+                                    if is_head(k):
+                                        per_key_norms[k].append(float(torch.norm(client_update[k].reshape(-1), p=2).item()))
+                                head_C = dp_clip_state.get('__HEAD__',{}).get('C', C_head)
+                            head_coef = 1.0 if hn == 0.0 else min(1.0, head_C / (hn + 1e-12))
+                            clipped_any = clipped_any or (head_coef < 0.999999)
+                        if feat_vec is not None:
+                            fn = float(torch.norm(feat_vec, p=2).item())
+                            feat_C = C_feat
+                            if adaptive:
+                                for k in client_update:
+                                    if not is_head(k):
+                                        per_key_norms[k].append(float(torch.norm(client_update[k].reshape(-1), p=2).item()))
+                                feat_C = dp_clip_state.get('__FEAT__',{}).get('C', C_feat)
+                            feat_coef = 1.0 if fn == 0.0 else min(1.0, feat_C / (fn + 1e-12))
+                            clipped_any = clipped_any or (feat_coef < 0.999999)
+                        if clipped_any:
+                            clip_events += 1
+                        for k, t in client_update.items():
+                            coef = head_coef if is_head(k) else feat_coef
+                            dp_updates[k] += t * coef * equal_weight
+
+                # Compute SNR using concatenated dp_updates
+                if dp_param_names:
+                    clipped_mean_vec = torch.cat([dp_updates[k].reshape(-1) for k in dp_param_names])
+                    clipped_mean_norm = float(torch.norm(clipped_mean_vec, p=2).item())
+                else:
+                    clipped_mean_norm = 0.0
+
+                q = min(1.0, m / N)
+                noise_norm_sq = 0.0
+                # Add noise per key depending on mode
+                for idx, key in enumerate(dp_param_names):
+                    if clip_mode == 'group':
+                        Ck = C_head if is_head(key) else C_feat
+                    else:
+                        Ck = dp_clip_state.get(key, {}).get('C', clip_norm) if getattr(args, 'dp_adaptive', 1) == 1 and clip_mode == 'tensor' else clip_norm
+                    dp_noise_std_k = sigma * Ck / m if m > 0 else 0.0
+                    if dp_noise_std_k > 0.0:
+                        if dp_seed_base is not None:
+                            device_key = global_state[key].device
+                            local_generator = torch.Generator(device=device_key)
+                            local_generator.manual_seed(dp_seed_base + round * 9973 + idx)
+                            noise = torch.randn(dp_updates[key].shape, device=device_key, dtype=dp_updates[key].dtype, generator=local_generator) * dp_noise_std_k
+                        else:
+                            noise = torch.randn_like(dp_updates[key]) * dp_noise_std_k
+                    else:
+                        noise = torch.zeros_like(dp_updates[key])
+                    noise_norm_sq += float((noise.view(-1) ** 2).sum().item())
+                    global_w[key] = global_state[key] + dp_updates[key] + noise
+
+                noise_norm = math.sqrt(noise_norm_sq)
+                snr = float('inf') if noise_norm == 0.0 else clipped_mean_norm / (noise_norm + 1e-12)
+                clip_rate = clip_events / m if m > 0 else 0.0
+
+                # Adaptive update of per-tensor clip norms for next round
+                if adaptive:
+                    q = min(1.0, m / N)
+                    quant = float(getattr(args, 'dp_quantile', 0.8))
+                    beta = float(getattr(args, 'dp_ema_beta', 0.2))
+                    for k in dp_param_names:
+                        norms = per_key_norms.get(k, [])
+                        if norms:
+                            sorted_norms = sorted(norms)
+                            idxq = int(max(0, min(len(sorted_norms)-1, round((len(sorted_norms)-1) * quant))))
+                            q_val = sorted_norms[idxq]
+                            prev = dp_clip_state.get(k, {}).get('C', clip_norm)
+                            newC = (1.0 - beta) * prev + beta * q_val
+                            dp_clip_state[k]['C'] = float(max(1e-8, newC))
+                    # Also adapt group Cs for group mode by aggregating per-key norms
+                    if clip_mode == 'group':
+                        head_vals=[]; feat_vals=[]
+                        for k, norms in per_key_norms.items():
+                            if is_head(k): head_vals += norms
+                            else: feat_vals += norms
+                        if head_vals:
+                            sh=sorted(head_vals); ih=int(round((len(sh)-1)*quant)); ch=(1.0-beta)*dp_clip_state['__HEAD__']['C'] + beta*sh[ih]
+                            dp_clip_state['__HEAD__']['C']=float(max(1e-8, ch))
+                        if feat_vals:
+                            sf=sorted(feat_vals); ife=int(round((len(sf)-1)*quant)); cf=(1.0-beta)*dp_clip_state['__FEAT__']['C'] + beta*sf[ife]
+                            dp_clip_state['__FEAT__']['C']=float(max(1e-8, cf))
+
+                epsilon_round = float('inf')
+                epsilon_total = float('inf')
+                alpha_round = None
+                alpha_total = None
+                if accountant is not None and sigma > 0.0:
+                    rdp_step = accountant.step(q, sigma)
+                    epsilon_round, alpha_round = accountant.epsilon(dp_delta, rdp_step)
+                    epsilon_total, alpha_total = accountant.epsilon(dp_delta)
 
             if args.server_momentum:
                 delta_w = copy.deepcopy(global_w)
@@ -1183,10 +1337,27 @@ if __name__ == '__main__':
                 torch.save(global_model.state_dict(), args.modeldir+'fedavg/'+'globalmodel'+args.log_file_name+'.pth')
                 torch.save(nets[0].state_dict(), args.modeldir+'fedavg/'+'localmodel0'+args.log_file_name+'.pth')
 
-            if args.dp_enable and args.dp_noise_multiplier > 0:
-                dp_steps = round + 1
-                epsilon, best_order = _compute_gaussian_dp_epsilon(args.dp_noise_multiplier, dp_steps, dp_delta)
-                dp_msg = 'DP accounting (target={}, round={}): epsilon={:.4f}, delta={:.2e}, alpha={}'.format(
-                    args.dp_target, dp_steps, epsilon, dp_delta, best_order)
+            if args.dp_enable and dp_param_names:
+                round_idx = round + 1
+                if math.isinf(epsilon_round):
+                    epsilon_round_str = 'inf'
+                elif alpha_round is None:
+                    epsilon_round_str = f'{epsilon_round:.4f}'
+                else:
+                    epsilon_round_str = f'{epsilon_round:.4f} (alpha {alpha_round})'
+
+                if math.isinf(epsilon_total):
+                    epsilon_total_str = 'inf'
+                elif alpha_total is None:
+                    epsilon_total_str = f'{epsilon_total:.4f}'
+                else:
+                    epsilon_total_str = f'{epsilon_total:.4f} (alpha {alpha_total})'
+
+                dp_msg = (
+                    f"DP round {round_idx} | target={args.dp_target} | m={m} | N={N} | q={q:.6f} | "
+                    f"clip_norm={args.dp_clip_norm:.6f} | sigma={args.dp_noise_multiplier:.6f} | "
+                    f"noise_std={dp_noise_std:.6f} | epsilon_round={epsilon_round_str} | "
+                    f"epsilon_total={epsilon_total_str} | delta={dp_delta:.2e} | snr={snr:.6f} | "
+                    f"clip_rate={clip_rate:.6f}")
                 print(dp_msg)
                 logger.info(dp_msg)

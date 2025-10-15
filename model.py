@@ -14,10 +14,8 @@ try:
 except Exception as _e:
     _TORCHTEXT_AVAILABLE = False
     _TORCHTEXT_IMPORT_ERROR = _e
-import os
 from embedding.meta import RNN
 from embedding.auxiliary.factory import get_embedding
-from data.vector_loader import load_local_glove_vectors
 
 
 def l2_normalize(x):
@@ -42,7 +40,8 @@ class DropBlock(nn.Module):
 
             bernoulli = Bernoulli(gamma)
             mask = bernoulli.sample(
-                (batch_size, channels, height - (self.block_size - 1), width - (self.block_size - 1))).cuda()
+                (batch_size, channels, height - (self.block_size - 1), width - (self.block_size - 1)))
+            mask = mask.to(x.device)
             # print((x.sample[-2], x.sample[-1]))
             block_mask = self._compute_block_mask(mask)
             # print (block_mask.size())
@@ -64,14 +63,15 @@ class DropBlock(nn.Module):
         non_zero_idxs = mask.nonzero()
         nr_blocks = non_zero_idxs.shape[0]
 
+        device = mask.device
         offsets = torch.stack(
             [
-                torch.arange(self.block_size).view(-1, 1).expand(self.block_size, self.block_size).reshape(-1),
+                torch.arange(self.block_size, device=device).view(-1, 1).expand(self.block_size, self.block_size).reshape(-1),
                 # - left_padding,
-                torch.arange(self.block_size).repeat(self.block_size),  # - left_padding
+                torch.arange(self.block_size, device=device).repeat(self.block_size),  # - left_padding
             ]
-        ).t().cuda()
-        offsets = torch.cat((torch.zeros(self.block_size ** 2, 2).cuda().long(), offsets.long()), 1)
+        ).t()
+        offsets = torch.cat((torch.zeros(self.block_size ** 2, 2, device=device).long(), offsets.long()), 1)
 
         if nr_blocks > 0:
             non_zero_idxs = non_zero_idxs.repeat(self.block_size ** 2, 1)
@@ -947,17 +947,13 @@ class ModelFed_Adp(nn.Module):
 if _TORCHTEXT_AVAILABLE:
     class WORDEBD(nn.Module):
         '''
-            An embedding layer that maps token ids to pretrained GloVe vectors.
-            Uses torchtext to load GloVe. Only needed for text datasets.
+            An embedding layer that maps the token id into its corresponding word
+            embeddings. The word embeddings are kept as fixed once initialized.
         '''
 
         def __init__(self, finetune_ebd):
             super(WORDEBD, self).__init__()
-            # Use local cache if available (expects glove.42B.300d.txt at project root)
-            cache_dir = os.path.abspath(os.path.dirname(__file__))
-            vectors = load_local_glove_vectors(cache_dir, filename='glove.42B.300d.txt', dim=300)
-            if vectors is None:
-                vectors = GloVe(name='42B', dim=300, cache=cache_dir)
+            vectors = GloVe(name='42B', dim=300)
 
             self.vocab_size, self.embedding_dim = vectors.vectors.size()
             self.embedding_layer = nn.Embedding(
