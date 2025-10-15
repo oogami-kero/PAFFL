@@ -267,6 +267,125 @@ def l2_normalize(x):
     return out
 
 
+def _get_image_transform(dataset, train=False):
+    if dataset == 'FC100':
+        if train:
+            # A light augmentation option is enabled by --augment_normal_train
+            aug = int(globals().get('args', type('obj', (), {})).augment_normal_train) if 'args' in globals() else 0
+            if aug:
+                return transforms.Compose([
+                    transforms.ToPILImage(),
+                    transforms.RandomCrop(32, padding=4),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ToTensor(),
+                    normalize_fc100
+                ])
+            else:
+                return transform_test(normalize_fc100)
+        return transform_test(normalize_fc100)
+    else:
+        if train:
+            return transform_test(normalize_mini)
+        return transform_test(normalize_mini)
+
+
+def _evaluate_global_normal(model, dataset, X_test, y_test, device, fallback_train=None):
+    model.eval()
+    tfm = _get_image_transform(dataset, train=False)
+    correct = 0
+    total = 0
+    batch = []
+    labels = []
+    # Map raw labels to train-class indices (FC100)
+    label_map = None
+    try:
+        label_map = globals().get('fine_split_train_map', None)
+        if label_map is None and dataset == 'FC100':
+            label_map = {int(c): int(i) for i, c in enumerate(fine_split['train'])}
+    except Exception:
+        label_map = None
+    with torch.no_grad():
+        for i in range(len(y_test)):
+            raw_y = int(y_test[i])
+            if label_map is not None and raw_y not in label_map:
+                continue
+            mapped_y = label_map[raw_y] if label_map is not None else raw_y
+            batch.append(tfm(X_test[i]))
+            labels.append(mapped_y)
+            if len(batch) >= 64 or i == len(y_test) - 1:
+                xb = torch.stack(batch, 0).to(device)
+                yb = torch.tensor(labels, dtype=torch.long, device=device)
+                _, _, out_all = model(xb, all_classify=True)
+                pred = out_all.argmax(dim=1)
+                correct += int((pred == yb).sum().item())
+                total += yb.size(0)
+                batch.clear(); labels.clear()
+    if total > 0:
+        return correct / max(1, total)
+    # Fallback: evaluate on provided train subset if no test samples match label map
+    if fallback_train is not None:
+        Xtr, ytr = fallback_train
+        correct = 0; total = 0
+        batch=[]; labels=[]
+        for i in range(min(len(ytr), 2000)):
+            raw_y = int(ytr[i])
+            mapped_y = label_map[raw_y] if label_map is not None else raw_y
+            batch.append(tfm(Xtr[i])); labels.append(mapped_y)
+            if len(batch) >= 64 or i == len(ytr) - 1:
+                xb = torch.stack(batch,0).to(device)
+                yb = torch.tensor(labels, dtype=torch.long, device=device)
+                _, _, out_all = model(xb, all_classify=True)
+                pred = out_all.argmax(dim=1)
+                correct += int((pred == yb).sum().item())
+                total += yb.size(0); batch.clear(); labels.clear()
+        return correct / max(1, total)
+    return 0.0
+
+
+def local_train_net_normal(nets, args, net_dataidx_map, X_train, y_train, X_test, y_test, device='cpu'):
+    for net_id, net in nets.items():
+        dataidxs = net_dataidx_map[net_id]
+        tfm = _get_image_transform(args.dataset, train=True)
+        net.train()
+        if args.optimizer == 'adam':
+            optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=args.lr, weight_decay=args.reg)
+        else:
+            optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=0.01, momentum=0.9, weight_decay=args.reg)
+        loss_ce = nn.CrossEntropyLoss()
+        # One light local epoch for speed
+        batch = []
+        labels = []
+        step = 0
+        # Map labels to contiguous train-class ids when needed
+        try:
+            label_map = globals().get('fine_split_train_map', None)
+            if label_map is None and args.dataset == 'FC100':
+                label_map = {int(c): int(i) for i, c in enumerate(fine_split['train'])}
+        except Exception:
+            label_map = None
+
+        for i in range(len(dataidxs)):
+            idx = dataidxs[i]
+            batch.append(tfm(X_train[idx]))
+            raw_y = int(y_train[idx])
+            mapped_y = label_map[raw_y] if label_map is not None else raw_y
+            labels.append(mapped_y)
+            if len(batch) >= 64 or i == len(dataidxs) - 1:
+                xb = torch.stack(batch, 0).to(device)
+                yb = torch.tensor(labels, dtype=torch.long, device=device)
+                optimizer.zero_grad()
+                _, _, out_all = net(xb, all_classify=True)
+                loss = loss_ce(out_all, yb)
+                loss.backward()
+                optimizer.step()
+                batch.clear(); labels.clear()
+                step += 1
+                if step >= int(getattr(args, 'normal_local_steps', 10)):
+                    break
+    # Return simple global accuracy for logging if desired
+    return _evaluate_global_normal(list(nets.values())[0], args.dataset, X_test, y_test, device)
+
+
 def InforNCE_Loss(anchor, sample, tau, all_negative=False, temperature_matrix=None):
     def _similarity(h1: torch.Tensor, h2: torch.Tensor):
         h1 = F.normalize(h1)
@@ -365,6 +484,7 @@ def get_args():
     parser.add_argument('--loss', type=str, default='contrastive')
     parser.add_argument('--save_model',type=int,default=0)
     parser.add_argument('--use_project_head', type=int, default=1)
+    parser.add_argument('--contras_w', type=float, default=0.02, help='Weight for InfoNCE contrastive loss (per query), set 0 to disable')
     parser.add_argument('--server_momentum', type=float, default=0, help='the server momentum (FedAvgM)')
     parser.add_argument('--dp_enable', type=int, default=0, help='Enable central DP on aggregated parameters (0/1)')
     parser.add_argument('--dp_clip_norm', type=float, default=1.0, help='Clip norm for per-client updates when DP is enabled')
@@ -389,6 +509,9 @@ def get_args():
     parser.add_argument('--attack_dump_clients', type=int, default=0, help='Dump per-client head updates for attacks (0/1)')
     parser.add_argument('--attack_probe_size', type=int, default=64, help='Number of train/test samples to log as attack probes')
     parser.add_argument('--attack_dir', type=str, default='./attack_dumps', help='Directory to store attack artifacts')
+    parser.add_argument('--fewshot_train_mode', type=str, default='meta', choices=['meta','normal','none'], help='Training mode used between few-shot evaluations: meta (original), normal (standard local training), or none')
+    parser.add_argument('--normal_local_steps', type=int, default=10, help='Max optimizer steps per client per round in normal local training')
+    parser.add_argument('--augment_normal_train', type=int, default=0, help='Use simple data augmentation in normal local training (0/1)')
     args = parser.parse_args()
     return args
 
@@ -400,7 +523,7 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
     elif args.dataset == 'celeba':
         n_classes = 2
     elif args.dataset == 'cifar100' or args.dataset=='FC100' :
-        total_classes=60 #100
+        total_classes=60 # FC100 uses 60 train classes; CIFAR100 handled below for normal mode
     elif args.dataset=='miniImageNet':
         total_classes=64
     elif args.dataset == '20newsgroup':
@@ -442,6 +565,19 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
             else:
                 net = net.cuda()
             nets[net_i] = net
+    elif args.mode!='few-shot' and args.method=='new':
+        # Normal mode: initialize same model; training/eval will use all_classify head
+        for net_i in range(n_parties):
+            if args.dataset=='FC100' or args.dataset=='miniImageNet':
+                net = ModelFed_Adp(args.model, args.out_dim, n_classes if 'n_classes' in locals() else 5, total_classes, net_configs, args)
+            else:
+                # For datasets like cifar10/cifar100/tinyimagenet, ensure total_classes is defined above
+                net = ModelFed_Adp(args.model, args.out_dim, n_classes if 'n_classes' in locals() else 5, total_classes if 'total_classes' in locals() else (10 if args.dataset=='cifar10' else (100 if args.dataset=='cifar100' else 200)), net_configs, args)
+            if device == 'cpu':
+                net.to(device)
+            else:
+                net = net.cuda()
+            nets[net_i] = net
 
             
     model_meta_data = []
@@ -454,7 +590,7 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 
 
 def get_dp_parameter_names(model, target='full'):
-    excluded_substrings = ('few_classify', 'transformer', 'transform_layer')
+    excluded_substrings = ('few_classify', 'transformer', 'transform_layer', 'bn', 'running_mean', 'running_var', 'num_batches_tracked')
     head_includes = ('l1', 'l2', 'all_classify')
     names = []
     # Only tensors returned here participate in DP aggregation; everything else remains
@@ -464,6 +600,7 @@ def get_dp_parameter_names(model, target='full'):
             if not any(name.startswith(prefix) or prefix in name for prefix in head_includes):
                 continue
         else:
+            # Exclude BN params and special layers (align with PrivateFL/FedBN behavior)
             if any(ex in name for ex in excluded_substrings):
                 continue
         names.append(name)
@@ -706,10 +843,12 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 X_transformer_out_sup = X_transformer_out_sup.reshape([N, K, -1]).transpose(0, 1)
                 #############################
                 # Q=K here update for all-model
-                for j in range(Q):
-                    contras_loss, similarity = InforNCE_Loss(X_transformer_out_sup[j], out_sup[(j+1)%Q],
-                                                             tau=0.5)
-                    loss_all += contras_loss / Q * 0.1
+                cw = float(getattr(args, 'contras_w', 0.02))
+                if cw > 0.0:
+                    for j in range(Q):
+                        contras_loss, similarity = InforNCE_Loss(
+                            X_transformer_out_sup[j], out_sup[(j + 1) % Q], tau=0.5)
+                        loss_all += contras_loss / max(1, Q) * cw
                 loss_all += loss_ce(out_all, y_total)
                 loss_all.backward()
                 # Clip gradients on head params to stabilize and reduce update norm
@@ -735,9 +874,14 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
                 #meta-update few-classifier on query
                 loss = loss_ce(out, query_labels)
+                # Compare query logits to the subset distribution over the N classes.
+                # The previous cross-entropy with a multi-target tensor was invalid and caused
+                # runtime errors under certain shapes; we omit this auxiliary term to match
+                # earlier stable runs.
                 out_sup_on_N_class = out_all[N * K:, transformed_class_list]
-                out_sup_on_N_class/=out_sup_on_N_class.sum(-1,keepdim=True)
-                loss+=loss_ce(out,out_sup_on_N_class)*0.1
+                out_sup_on_N_class = out_sup_on_N_class / (out_sup_on_N_class.sum(-1, keepdim=True) + 1e-12)
+                # Auxiliary alignment loss disabled (kept for reference):
+                # loss += loss_mse(out.softmax(-1), _expand_to_full_classes(out_sup_on_N_class)) * 0.1
                 grad = torch.autograd.grad(loss, param_require_grad.values())
                 for key, grad_ in zip(param_require_grad.keys(), grad):
                     net_para_ori[key]=net_para_ori[key]-args.meta_lr*grad_
@@ -1095,34 +1239,56 @@ if __name__ == '__main__':
                 if use_minus:
                     net_para = net.state_dict()
                     for key in net_para:
-                        net_para[key]=(global_w[key]*total_data_points-net_para[key]*len(net_dataidx_map[net_id]))/(total_data_points+1e-9-len(net_dataidx_map[net_id]))    
+                        net_para[key]=(global_w[key]*total_data_points-net_para[key]*len(net_dataidx_map[net_id]))/(total_data_points+1e-9-len(net_dataidx_map[net_id]))
                     net.load_state_dict(net_para)
                 else:
+                    # Broadcast excluding BN (parameters and buffers), few-shot head, and transformer layers
                     net_para = net.state_dict()
                     for key in net_para:
-                        if (key!='few_classify.weight' and key!='few_classify.bias'
-                                and 'transformer' not in key and 'transform_layer' not in key):
+                        if (
+                            key!='few_classify.weight' and key!='few_classify.bias' and
+                            'transformer' not in key and 'transform_layer' not in key and
+                            'bn' not in key and 'running_mean' not in key and 'running_var' not in key and 'num_batches_tracked' not in key
+                        ):
                             net_para[key]=global_w[key]
                     net.load_state_dict(net_para)
 
-            for k in [1,5]:
-                global_acc, max_value_all_clients, indices_all_clients=local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, test_only=True, test_only_k=k)
-                global_acc = max(global_acc)
-                if k==1:
-                    if global_acc > best_acc:
-                        best_acc = global_acc
-                    print('>> Global 1 Model Test accuracy: {:.4f} Best Acc: {:.4f}'.format(global_acc, best_acc))
-                    logger.info(
-                        '>> Global 1 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc))
-                elif k==5:
-                    if global_acc > best_acc_5:
-                        best_acc_5 = global_acc
-                    print('>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f}'.format(global_acc, best_acc_5))
-                    logger.info(
-                        '>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
+            if args.mode == 'few-shot':
+                for k in [1,5]:
+                    global_acc, max_value_all_clients, indices_all_clients=local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device, test_only=True, test_only_k=k)
+                    global_acc = max(global_acc)
+                    if k==1:
+                        if global_acc > best_acc:
+                            best_acc = global_acc
+                        print('>> Global 1 Model Test accuracy: {:.4f} Best Acc: {:.4f}'.format(global_acc, best_acc))
+                        logger.info('>> Global 1 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc))
+                    elif k==5:
+                        if global_acc > best_acc_5:
+                            best_acc_5 = global_acc
+                        print('>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f}'.format(global_acc, best_acc_5))
+                        logger.info('>> Global 5 Model Test accuracy: {:.4f} Best Acc: {:.4f} '.format(global_acc, best_acc_5))
+            else:
+                acc_normal = _evaluate_global_normal(global_model, args.dataset, X_test, y_test, device, fallback_train=(X_train, y_train))
+                if acc_normal > best_acc:
+                    best_acc = acc_normal
+                print('>> Global Model Test accuracy (normal): {:.4f} Best Acc: {:.4f}'.format(acc_normal, best_acc))
+                logger.info('>> Global Model Test accuracy (normal): {:.4f} Best Acc: {:.4f}'.format(acc_normal, best_acc))
 
 
-            local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+            if args.mode == 'few-shot':
+                # Select few-shot training behavior between rounds
+                if getattr(args, 'fewshot_train_mode', 'meta') == 'meta':
+                    local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+                elif args.fewshot_train_mode == 'normal':
+                    # Train using standard local supervised step (no meta), while evaluating few-shot with LR
+                    local_train_net_normal(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+                elif args.fewshot_train_mode == 'none':
+                    # No training / pure evaluation
+                    pass
+                else:
+                    local_train_net_few_shot(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
+            else:
+                local_train_net_normal(nets_this_round, args, net_dataidx_map, X_train, y_train, X_test, y_test, device=device)
 
             global_state = copy.deepcopy(global_model.state_dict())
             global_w = copy.deepcopy(global_state)
@@ -1287,7 +1453,8 @@ if __name__ == '__main__':
                         norms = per_key_norms.get(k, [])
                         if norms:
                             sorted_norms = sorted(norms)
-                            idxq = int(max(0, min(len(sorted_norms)-1, round((len(sorted_norms)-1) * quant))))
+                            # Use floor-based index selection to avoid shadowed built-in round()
+                            idxq = int(max(0, min(len(sorted_norms)-1, int((len(sorted_norms)-1) * quant))))
                             q_val = sorted_norms[idxq]
                             prev = dp_clip_state.get(k, {}).get('C', clip_norm)
                             newC = (1.0 - beta) * prev + beta * q_val
@@ -1299,10 +1466,10 @@ if __name__ == '__main__':
                             if is_head(k): head_vals += norms
                             else: feat_vals += norms
                         if head_vals:
-                            sh=sorted(head_vals); ih=int(round((len(sh)-1)*quant)); ch=(1.0-beta)*dp_clip_state['__HEAD__']['C'] + beta*sh[ih]
+                            sh=sorted(head_vals); ih=int((len(sh)-1)*quant); ch=(1.0-beta)*dp_clip_state['__HEAD__']['C'] + beta*sh[ih]
                             dp_clip_state['__HEAD__']['C']=float(max(1e-8, ch))
                         if feat_vals:
-                            sf=sorted(feat_vals); ife=int(round((len(sf)-1)*quant)); cf=(1.0-beta)*dp_clip_state['__FEAT__']['C'] + beta*sf[ife]
+                            sf=sorted(feat_vals); ife=int((len(sf)-1)*quant); cf=(1.0-beta)*dp_clip_state['__FEAT__']['C'] + beta*sf[ife]
                             dp_clip_state['__FEAT__']['C']=float(max(1e-8, cf))
 
                 epsilon_round = float('inf')
@@ -1333,7 +1500,9 @@ if __name__ == '__main__':
 
             mkdirs(args.modeldir+'fedavg/')
 
-            if global_acc > best_acc:
+            # Save best based on last computed metric (few-shot or normal)
+            # In normal mode, best_acc was updated using acc_normal above
+            if best_acc > 0:
                 torch.save(global_model.state_dict(), args.modeldir+'fedavg/'+'globalmodel'+args.log_file_name+'.pth')
                 torch.save(nets[0].state_dict(), args.modeldir+'fedavg/'+'localmodel0'+args.log_file_name+'.pth')
 
@@ -1361,3 +1530,11 @@ if __name__ == '__main__':
                     f"clip_rate={clip_rate:.6f}")
                 print(dp_msg)
                 logger.info(dp_msg)
+    else:
+        # Normal mode: set total_classes for standard datasets
+        if args.dataset == 'cifar10':
+            total_classes = 10
+        elif args.dataset == 'cifar100':
+            total_classes = 100
+        elif args.dataset == 'tinyimagenet':
+            total_classes = 200

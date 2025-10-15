@@ -207,6 +207,10 @@ def partition_data(dataset, datadir, logdir, partition, n_parties, beta=0.4):
                                  76, 77, 78]
             elif dataset=='huffpost':
                 train_classes=list(range(20))
+            elif dataset=='cifar10':
+                train_classes=list(range(10))
+            elif dataset=='cifar100':
+                train_classes=list(range(100))
 
             for k in train_classes:
                 idx_k = np.where(y_train == k)[0]

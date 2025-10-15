@@ -34,20 +34,38 @@ class DropBlock(nn.Module):
 
     def forward(self, x, gamma):
         # shape: (bsize, channels, height, width)
-
         if self.training:
             batch_size, channels, height, width = x.shape
 
+            # Temporary guard: skip DropBlock if spatial dims are too small
+            # or if block_size is invalid for current feature map size.
+            if (
+                self.block_size is None
+                or self.block_size < 1
+                or height < self.block_size
+                or width < self.block_size
+                or (height - (self.block_size - 1)) <= 0
+                or (width - (self.block_size - 1)) <= 0
+            ):
+                return x
+
             bernoulli = Bernoulli(gamma)
             mask = bernoulli.sample(
-                (batch_size, channels, height - (self.block_size - 1), width - (self.block_size - 1)))
+                (batch_size, channels, height - (self.block_size - 1), width - (self.block_size - 1))
+            )
             mask = mask.to(x.device)
-            # print((x.sample[-2], x.sample[-1]))
             block_mask = self._compute_block_mask(mask)
-            # print (block_mask.size())
-            # print (x.size())
-            countM = block_mask.size()[0] * block_mask.size()[1] * block_mask.size()[2] * block_mask.size()[3]
+            countM = (
+                block_mask.size()[0]
+                * block_mask.size()[1]
+                * block_mask.size()[2]
+                * block_mask.size()[3]
+            )
             count_ones = block_mask.sum()
+
+            # Avoid division by zero if mask is degenerate
+            if count_ones.item() == 0:
+                return x
 
             return block_mask * x * (countM / count_ones)
         else:
@@ -145,9 +163,13 @@ class BasicBlock(nn.Module):
         if self.drop_rate > 0:
             if self.drop_block == True:
                 feat_size = out.size()[2]
-                keep_rate = max(1.0 - self.drop_rate / (20 * 2000) * (self.num_batches_tracked), 1.0 - self.drop_rate)
-                gamma = (1 - keep_rate) / self.block_size ** 2 * feat_size ** 2 / (feat_size - self.block_size + 1) ** 2
-                out = self.DropBlock(out, gamma=gamma)
+                # Guard: if feature map is too small for current block size, skip DropBlock
+                if self.block_size is None or self.block_size < 1 or (feat_size - self.block_size + 1) <= 0:
+                    pass
+                else:
+                    keep_rate = max(1.0 - self.drop_rate / (20 * 2000) * (self.num_batches_tracked), 1.0 - self.drop_rate)
+                    gamma = (1 - keep_rate) / (self.block_size ** 2) * (feat_size ** 2) / ((feat_size - self.block_size + 1) ** 2)
+                    out = self.DropBlock(out, gamma=gamma)
             else:
                 out = F.dropout(out, p=self.drop_rate, training=self.training, inplace=True)
 
@@ -909,7 +931,8 @@ class ModelFed_Adp(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4)
         self.transformer= nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
 
-        print(self.state_dict().keys())
+        # Suppress verbose state dict key dump during model init (was printing odict_keys(...))
+        # print(self.state_dict().keys())
 
     def _get_basemodel(self, model_name):
         try:
@@ -922,9 +945,16 @@ class ModelFed_Adp(nn.Module):
     def forward(self, x_ori, all_classify=False):
         h = self.features(x_ori)
 
-        # print("h before:", h)
-        # print("h size:", h.size())
-        ebd = h.squeeze()
+        # Ensure batch dimension is preserved (avoid squeeze collapsing B=1)
+        if isinstance(h, torch.Tensor):
+            if h.dim() > 2:
+                ebd = h.flatten(1)
+            elif h.dim() == 1:
+                ebd = h.unsqueeze(0)
+            else:
+                ebd = h
+        else:
+            ebd = h
         # print("h after:", h)
         #x = self.l1(h)
         #x = F.relu(x)
@@ -1035,7 +1065,8 @@ class LSTMAtt(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.ebd_dim, nhead=4)
         self.transformer= nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
 
-        print(self.state_dict().keys())
+        # Suppress verbose state dict key dump during model init (was printing odict_keys(...))
+        # print(self.state_dict().keys())
 
 
 
