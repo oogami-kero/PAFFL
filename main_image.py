@@ -20,7 +20,7 @@ from PIL import Image
 
 from model import *
 from utils import *
-from dp_utils import RDPAccountant
+from dp_utils import RDPAccountant, PRVAccountant
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -498,12 +498,16 @@ def get_args():
     parser.add_argument('--head_grad_clip', type=float, default=1.0, help='Max-norm gradient clip for head params (<=0 disables)')
     parser.add_argument('--dp_clip_norm_head', type=float, default=None, help='Override clip norm for head group (group mode)')
     parser.add_argument('--dp_clip_norm_feat', type=float, default=None, help='Override clip norm for features group (group mode)')
+    parser.add_argument('--dp_clip_norm_adapter', type=float, default=None, help='Override clip norm for adapter group (group mode)')
     parser.add_argument('--dp_adaptive', type=int, default=1, help='Enable adaptive per-tensor/group clipping via EMA of quantiles (0/1)')
     parser.add_argument('--dp_quantile', type=float, default=0.8, help='Quantile of per-client norms to target for adaptive clipping')
     parser.add_argument('--dp_ema_beta', type=float, default=0.2, help='EMA factor for adaptive clip norms')
     parser.add_argument('--train_expand_N', type=int, default=4, help='Multiply N in train episodes (e.g., FC100 default 4)')
     parser.add_argument('--freeze_backbone_after', type=int, default=-1, help='Round index after which backbone features stop training (-1 disables)')
     parser.add_argument('--use_transform_layer', type=int, default=0, help='Enable client-side transform layer before shared head (0/1)')
+    parser.add_argument('--film_adapter', type=int, default=0, help='Enable FiLM/Affine adapter on pooled features (0/1)')
+    parser.add_argument('--film_init_scale', type=float, default=1.0, help='Initial scale for FiLM gamma (beta initialized to 0)')
+    parser.add_argument('--dp_accountant', type=str, default='rdp', choices=['rdp','prv'], help='Privacy accountant type for epsilon reporting')
     parser.add_argument('--attack_dump', type=int, default=0, help='Enable attack artifact dumping (0/1)')
     parser.add_argument('--attack_dump_rounds', type=str, default=None, help='Comma-separated rounds or "all" to dump attack artifacts')
     parser.add_argument('--attack_dump_clients', type=int, default=0, help='Dump per-client head updates for attacks (0/1)')
@@ -1192,7 +1196,10 @@ if __name__ == '__main__':
             # Restrict head DP scope to logits only when requested
             if args.dp_target == 'head' and getattr(args, 'dp_head_scope', 'full') == 'logits':
                 dp_param_names = [n for n in dp_param_names if n.startswith('all_classify') or 'all_classify' in n]
-            accountant = RDPAccountant(dp_orders)
+            if getattr(args, 'dp_accountant','rdp') == 'prv':
+                accountant = PRVAccountant(dp_orders)
+            else:
+                accountant = RDPAccountant(dp_orders)
             logger.info(
                 f"DP enabled on {len(dp_param_names)} parameter tensors (target={args.dp_target}, "
                 f"clip_norm={args.dp_clip_norm:.6f}, noise_multiplier={args.dp_noise_multiplier:.6f}, delta={dp_delta:.2e})")
@@ -1333,6 +1340,7 @@ if __name__ == '__main__':
                 # Initialize group Cs (may be adapted below)
                 C_head = args.dp_clip_norm_head if args.dp_clip_norm_head is not None else dp_clip_state.get('__HEAD__',{}).get('C', clip_norm)
                 C_feat = args.dp_clip_norm_feat if args.dp_clip_norm_feat is not None else dp_clip_state.get('__FEAT__',{}).get('C', max(clip_norm/5.0, 0.5))
+                C_adapter = args.dp_clip_norm_adapter if hasattr(args, 'dp_clip_norm_adapter') and args.dp_clip_norm_adapter is not None else dp_clip_state.get('__ADAPTER__',{}).get('C', C_head)
 
                 # For logging: a representative noise_std value
                 if clip_mode == 'global' or clip_mode == 'tensor':
@@ -1344,6 +1352,8 @@ if __name__ == '__main__':
                 # Collect per-client per-tensor norms for adaptive clipping
                 adaptive = getattr(args, 'dp_adaptive', 1) == 1
                 per_key_norms = {k: [] for k in dp_param_names}
+                head_clip_events = 0
+                adapter_clip_events = 0
 
                 for client_id, net in nets_this_round.items():
                     net_state = net.state_dict()
@@ -1378,37 +1388,64 @@ if __name__ == '__main__':
                             clip_events += 1
 
                     elif clip_mode == 'group':
-                        # Compute per-group coef and apply to tensors by group
-                        # Head group
-                        head_vec = torch.cat([client_update[k].reshape(-1) for k in client_update if is_head(k)]) if any(is_head(k) for k in client_update) else None
-                        feat_vec = torch.cat([client_update[k].reshape(-1) for k in client_update if not is_head(k)]) if any((not is_head(k)) for k in client_update) else None
+                        # Compute per-group coef and apply to tensors by group (head, adapter, feat)
+                        def is_adapter(name: str) -> bool:
+                            return name.startswith('l1_adapter') or name.startswith('l1_film_')
+
+                        head_vec = torch.cat([client_update[k].reshape(-1) for k in client_update if (not is_adapter(k) and (k.startswith('l1') or k.startswith('l2') or k.startswith('all_classify')))]) if any((not is_adapter(k) and (k.startswith('l1') or k.startswith('l2') or k.startswith('all_classify'))) for k in client_update) else None
+                        adapter_vec = torch.cat([client_update[k].reshape(-1) for k in client_update if is_adapter(k)]) if any(is_adapter(k) for k in client_update) else None
+                        feat_vec = torch.cat([client_update[k].reshape(-1) for k in client_update if (not (not is_adapter(k) and (k.startswith('l1') or k.startswith('l2') or k.startswith('all_classify'))) and not is_adapter(k))]) if any((not (not is_adapter(k) and (k.startswith('l1') or k.startswith('l2') or k.startswith('all_classify'))) and not is_adapter(k)) for k in client_update) else None
                         head_coef = 1.0
+                        adapter_coef = 1.0
                         feat_coef = 1.0
                         clipped_any = False
+                        clipped_head = False
+                        clipped_adapter = False
                         if head_vec is not None:
                             hn = float(torch.norm(head_vec, p=2).item())
-                            head_C = C_head
+                            headC = C_head
                             if adaptive:
                                 for k in client_update:
-                                    if is_head(k):
+                                    if (not is_adapter(k) and (k.startswith('l1') or k.startswith('l2') or k.startswith('all_classify'))):
                                         per_key_norms[k].append(float(torch.norm(client_update[k].reshape(-1), p=2).item()))
-                                head_C = dp_clip_state.get('__HEAD__',{}).get('C', C_head)
-                            head_coef = 1.0 if hn == 0.0 else min(1.0, head_C / (hn + 1e-12))
-                            clipped_any = clipped_any or (head_coef < 0.999999)
+                                headC = dp_clip_state.get('__HEAD__',{}).get('C', C_head)
+                            head_coef = 1.0 if hn == 0.0 else min(1.0, headC / (hn + 1e-12))
+                            clipped_head = (head_coef < 0.999999)
+                            clipped_any = clipped_any or clipped_head
+                        if adapter_vec is not None:
+                            an = float(torch.norm(adapter_vec, p=2).item())
+                            adapterC = C_adapter
+                            if adaptive:
+                                for k in client_update:
+                                    if is_adapter(k):
+                                        per_key_norms[k].append(float(torch.norm(client_update[k].reshape(-1), p=2).item()))
+                                adapterC = dp_clip_state.get('__ADAPTER__',{}).get('C', C_adapter)
+                            adapter_coef = 1.0 if an == 0.0 else min(1.0, adapterC / (an + 1e-12))
+                            clipped_adapter = (adapter_coef < 0.999999)
+                            clipped_any = clipped_any or clipped_adapter
                         if feat_vec is not None:
                             fn = float(torch.norm(feat_vec, p=2).item())
-                            feat_C = C_feat
+                            featC = C_feat
                             if adaptive:
                                 for k in client_update:
-                                    if not is_head(k):
+                                    if (not (not is_adapter(k) and (k.startswith('l1') or k.startswith('l2') or k.startswith('all_classify'))) and not is_adapter(k)):
                                         per_key_norms[k].append(float(torch.norm(client_update[k].reshape(-1), p=2).item()))
-                                feat_C = dp_clip_state.get('__FEAT__',{}).get('C', C_feat)
-                            feat_coef = 1.0 if fn == 0.0 else min(1.0, feat_C / (fn + 1e-12))
+                                featC = dp_clip_state.get('__FEAT__',{}).get('C', C_feat)
+                            feat_coef = 1.0 if fn == 0.0 else min(1.0, featC / (fn + 1e-12))
                             clipped_any = clipped_any or (feat_coef < 0.999999)
                         if clipped_any:
                             clip_events += 1
+                        if clipped_head:
+                            head_clip_events += 1
+                        if clipped_adapter:
+                            adapter_clip_events += 1
                         for k, t in client_update.items():
-                            coef = head_coef if is_head(k) else feat_coef
+                            if (not is_adapter(k) and (k.startswith('l1') or k.startswith('l2') or k.startswith('all_classify'))):
+                                coef = head_coef
+                            elif is_adapter(k):
+                                coef = adapter_coef
+                            else:
+                                coef = feat_coef
                             dp_updates[k] += t * coef * equal_weight
 
                 # Compute SNR using concatenated dp_updates
@@ -1423,7 +1460,14 @@ if __name__ == '__main__':
                 # Add noise per key depending on mode
                 for idx, key in enumerate(dp_param_names):
                     if clip_mode == 'group':
-                        Ck = C_head if is_head(key) else C_feat
+                        def _is_adapter_local(nm: str) -> bool:
+                            return nm.startswith('l1_adapter') or nm.startswith('l1_film_')
+                        if (not _is_adapter_local(key) and (key.startswith('l1') or key.startswith('l2') or key.startswith('all_classify'))):
+                            Ck = C_head
+                        elif _is_adapter_local(key):
+                            Ck = C_adapter
+                        else:
+                            Ck = C_feat
                     else:
                         Ck = dp_clip_state.get(key, {}).get('C', clip_norm) if getattr(args, 'dp_adaptive', 1) == 1 and clip_mode == 'tensor' else clip_norm
                     dp_noise_std_k = sigma * Ck / m if m > 0 else 0.0
@@ -1461,16 +1505,31 @@ if __name__ == '__main__':
                             dp_clip_state[k]['C'] = float(max(1e-8, newC))
                     # Also adapt group Cs for group mode by aggregating per-key norms
                     if clip_mode == 'group':
-                        head_vals=[]; feat_vals=[]
+                        def _is_adapter_local(nm: str) -> bool:
+                            return nm.startswith('l1_adapter') or nm.startswith('l1_film_')
+                        head_vals=[]; adapter_vals=[]; feat_vals=[]
                         for k, norms in per_key_norms.items():
-                            if is_head(k): head_vals += norms
-                            else: feat_vals += norms
+                            if (not _is_adapter_local(k) and (k.startswith('l1') or k.startswith('l2') or k.startswith('all_classify'))):
+                                head_vals += norms
+                            elif _is_adapter_local(k):
+                                adapter_vals += norms
+                            else:
+                                feat_vals += norms
                         if head_vals:
-                            sh=sorted(head_vals); ih=int((len(sh)-1)*quant); ch=(1.0-beta)*dp_clip_state['__HEAD__']['C'] + beta*sh[ih]
-                            dp_clip_state['__HEAD__']['C']=float(max(1e-8, ch))
+                            sh=sorted(head_vals); ih=int((len(sh)-1)*quant);
+                            prev=dp_clip_state.get('__HEAD__',{}).get('C', C_head)
+                            ch=(1.0-beta)*prev + beta*sh[ih]
+                            dp_clip_state['__HEAD__']={'C': float(max(1e-8, ch))}
+                        if adapter_vals:
+                            sa=sorted(adapter_vals); ia=int((len(sa)-1)*quant);
+                            prev=dp_clip_state.get('__ADAPTER__',{}).get('C', C_adapter)
+                            ca=(1.0-beta)*prev + beta*sa[ia]
+                            dp_clip_state['__ADAPTER__']={'C': float(max(1e-8, ca))}
                         if feat_vals:
-                            sf=sorted(feat_vals); ife=int((len(sf)-1)*quant); cf=(1.0-beta)*dp_clip_state['__FEAT__']['C'] + beta*sf[ife]
-                            dp_clip_state['__FEAT__']['C']=float(max(1e-8, cf))
+                            sf=sorted(feat_vals); ife=int((len(sf)-1)*quant);
+                            prev=dp_clip_state.get('__FEAT__',{}).get('C', C_feat)
+                            cf=(1.0-beta)*prev + beta*sf[ife]
+                            dp_clip_state['__FEAT__']={'C': float(max(1e-8, cf))}
 
                 epsilon_round = float('inf')
                 epsilon_total = float('inf')
@@ -1527,7 +1586,8 @@ if __name__ == '__main__':
                     f"clip_norm={args.dp_clip_norm:.6f} | sigma={args.dp_noise_multiplier:.6f} | "
                     f"noise_std={dp_noise_std:.6f} | epsilon_round={epsilon_round_str} | "
                     f"epsilon_total={epsilon_total_str} | delta={dp_delta:.2e} | snr={snr:.6f} | "
-                    f"clip_rate={clip_rate:.6f}")
+                    f"clip_rate={clip_rate:.6f} | clip_rate_head={locals().get('head_clip_events',0)/m if m>0 else 0.0:.6f} | "
+                    f"clip_rate_adapter={locals().get('adapter_clip_events',0)/m if m>0 else 0.0:.6f}")
                 print(dp_msg)
                 logger.info(dp_msg)
     else:

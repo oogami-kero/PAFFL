@@ -883,6 +883,8 @@ class ModelFed_Adp(nn.Module):
     def __init__(self, base_model, out_dim, n_classes, total_classes, net_configs=None, args=None):
         super(ModelFed_Adp, self).__init__()
         self.use_transform_layer = bool(getattr(args, 'use_transform_layer', 0))
+        self.use_film_adapter = bool(getattr(args, 'film_adapter', 0))
+        self.film_init_scale = float(getattr(args, 'film_init_scale', 1.0))
 
         if base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel" or base_model == "resnet50":
             basemodel = ResNet50_cifar10()
@@ -919,6 +921,7 @@ class ModelFed_Adp(nn.Module):
         self.l1 = nn.Linear(num_ftrs, num_ftrs)
         self.l2 = nn.Linear(num_ftrs, out_dim)
 
+
         # last layer for few
         self.few_classify = nn.Linear(num_ftrs, n_classes)
 
@@ -930,6 +933,11 @@ class ModelFed_Adp(nn.Module):
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=num_ftrs, nhead=4)
         self.transformer= nn.TransformerEncoder(encoder_layer=encoder_layer, num_layers=1)
+
+        # Optional FiLM/Affine adapter on pooled features (kept in head group via 'l1_' prefix)
+        if self.use_film_adapter:
+            self.l1_film_gamma = nn.Parameter(torch.full((num_ftrs,), self.film_init_scale, dtype=torch.float))
+            self.l1_film_beta = nn.Parameter(torch.zeros(num_ftrs, dtype=torch.float))
 
         # Suppress verbose state dict key dump during model init (was printing odict_keys(...))
         # print(self.state_dict().keys())
@@ -962,6 +970,10 @@ class ModelFed_Adp(nn.Module):
 
         if self.use_transform_layer:
             ebd = self.transform_layer(ebd)
+
+        if self.use_film_adapter:
+            # Apply FiLM affine transform to the pooled feature
+            ebd = ebd * self.l1_film_gamma + self.l1_film_beta
 
         if not all_classify:
             x=self.transformer(ebd)

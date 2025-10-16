@@ -108,6 +108,84 @@ class RDPAccountant:
         return epsilons[best_idx], self.orders[best_idx]
 
 
+class PRVAccountant:
+    """
+    PRV/GDP-style accountant using Gaussian Differential Privacy (GDP) composition.
+
+    We compose via the Gaussian DP parameter mu: for independent compositions,
+    mu_total^2 = sum_i mu_i^2. For subsampled Gaussian mechanism with sampling
+    rate q and noise multiplier sigma, a common approximation is mu_i = q / sigma.
+
+    Given mu_total and target delta, epsilon is computed by numerically inverting
+    the GDP relation (Theorem 2.2 in Bun & Steinke, or Balle & Wang 2018):
+      delta(eps; mu) = Phi(-(eps/mu) + mu/2) - exp(eps) * Phi(-(eps/mu) - mu/2)
+
+    This yields typically tighter (or comparable) epsilons than standard RDP
+    conversions, especially when q < 1.0.
+    """
+
+    def __init__(self, orders: Iterable[float]):
+        # Keep interface parity; orders are unused here but accepted.
+        self.mu2_total: float = 0.0
+        self.mu_steps: List[float] = []
+
+    @staticmethod
+    def _phi(x: float) -> float:
+        # Standard normal CDF via erf
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+    @classmethod
+    def _delta_eps_gdp(cls, eps: float, mu: float) -> float:
+        if mu <= 0.0:
+            return 0.0 if eps >= 0 else 1.0
+        term1 = cls._phi(-(eps / mu) + mu / 2.0)
+        term2 = math.exp(eps) * cls._phi(-(eps / mu) - mu / 2.0)
+        delta = max(0.0, min(1.0, term1 - term2))
+        return delta
+
+    @classmethod
+    def _epsilon_from_delta(cls, delta: float, mu: float, eps_low: float = 0.0, eps_high: float = 200.0, tol: float = 1e-6) -> float:
+        # Binary search minimal eps s.t. delta(eps; mu) <= delta_target
+        if delta <= 0.0:
+            return 0.0
+        if delta >= 1.0:
+            return 0.0
+        low, high = eps_low, eps_high
+        for _ in range(100):
+            mid = 0.5 * (low + high)
+            dmid = cls._delta_eps_gdp(mid, mu)
+            if dmid > delta:
+                low = mid
+            else:
+                high = mid
+            if high - low < tol:
+                break
+        return max(0.0, high)
+
+    def step(self, q: float, sigma: float) -> List[float]:
+        # Approximate per-step mu for subsampled Gaussian
+        q = max(0.0, min(1.0, float(q)))
+        if sigma <= 0.0:
+            raise ValueError("sigma must be positive")
+        mu = q / float(sigma)
+        self.mu_steps.append(mu)
+        self.mu2_total += mu * mu
+        # Return per-step sequence for compatibility
+        return [mu]
+
+    def epsilon(self, delta: float, rdp_sequence: Optional[Iterable[float]] = None) -> Tuple[float, float]:
+        if rdp_sequence is not None:
+            mu2 = 0.0
+            for v in rdp_sequence:
+                mu2 += float(v) * float(v)
+            mu = math.sqrt(mu2)
+        else:
+            mu = math.sqrt(max(0.0, self.mu2_total))
+        eps = self._epsilon_from_delta(delta, mu)
+        # Return eps and a proxy order equal to mu for interface parity
+        return eps, mu
+
+
 class ClientDPMechanism:
     def __init__(
         self,
