@@ -821,7 +821,23 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
 
 
             if args.fine_tune_steps>0:
-                net_new = copy.deepcopy(net)
+                # Avoid duplicating CLIP visual encoder on GPU during inner-loop fine-tuning.
+                # For CLIP backbones, temporarily drop the reference before deepcopy, then
+                # reattach the shared CLIP module to the copy. This mirrors PrivateFL's
+                # memory discipline and prevents transient OOM from double instantiation.
+                net_new = None
+                _orig_clip = getattr(net, 'clip_model', None)
+                _is_clip = bool(getattr(net, 'is_clip_backbone', False) and _orig_clip is not None)
+                if _is_clip:
+                    try:
+                        net.clip_model = None
+                        net_new = copy.deepcopy(net)
+                    finally:
+                        net.clip_model = _orig_clip
+                    net_new.clip_model = _orig_clip
+                    net_new.is_clip_backbone = True
+                else:
+                    net_new = copy.deepcopy(net)
 
                 for j in range(args.fine_tune_steps):
                     X_out_sup, X_transformer_out_sup, out = net_new(X_total_sup)
