@@ -72,10 +72,8 @@ def _serialize_args(args):
 
 
 def _apply_test_transform_image(dataset, array):
-    if dataset == 'FC100':
-        transform = transform_test(normalize_fc100)
-    else:
-        transform = transform_test(normalize_mini)
+    # Use the same centralized transform logic as training/eval
+    transform = _get_image_transform(dataset, train=False)
     return transform(array)
 
 
@@ -691,29 +689,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                 Q = args.Q
             net.train()
             optimizer.zero_grad()
-            if args.dataset == 'FC100':
-                #X_transform = transform_train(normalize=normalize_fc100, crop_size=32, padding=4)
-                X_transform=    transforms.Compose([
-                    lambda x: Image.fromarray(x),
-                    transforms.RandomCrop(32, padding=4),
-                    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-                    transforms.RandomHorizontalFlip(),
-                    lambda x: np.asarray(x),
-                    transforms.ToTensor(),
-                    normalize_fc100
-                ])
-            else:
-                #X_transform = transform_train(normalize=normalize_mini, crop_size=84)
-                X_transform=    transforms.Compose([
-                    lambda x: Image.fromarray(x),
-                                #transforms.ToPILImage(),
-                    transforms.RandomCrop(84, padding=8),
-                    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
-                    transforms.RandomHorizontalFlip(),
-                    lambda x: np.asarray(x),
-                    transforms.ToTensor(),
-                    normalize_mini
-                ])
+            # Respect CLIP transforms when enabled or when using a CLIP backbone
+            X_transform = _get_image_transform(args.dataset, train=True)
 
         else:
             N=args.N
@@ -721,10 +698,8 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
             Q=args.Q
             #N=args.N*2
             net.eval()
-            if args.dataset == 'FC100':
-                X_transform = transform_test(normalize=normalize_fc100)
-            else:
-                X_transform = transform_test(normalize=normalize_mini)
+            # Respect CLIP transforms when enabled or when using a CLIP backbone
+            X_transform = _get_image_transform(args.dataset, train=False)
 
         if test_only==True:
             K=test_only_k
