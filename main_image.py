@@ -223,6 +223,7 @@ for fine_id,sparse_id in fine_id_coarse_id.items():
         
         
 import torchvision.transforms as transforms
+from torchvision.transforms import InterpolationMode
 
 #FC100
 normalize_fc100 = transforms.Normalize(mean=[0.5070751592371323, 0.48654887331495095, 0.4409178433670343],
@@ -233,6 +234,26 @@ mean_pix = [x / 255.0 for x in [120.39586422, 115.59361427, 104.54012653]]
 std_pix = [x / 255.0 for x in [70.68188272, 68.27635443, 72.54505529]]
 normalize_mini = transforms.Normalize(mean=mean_pix,
                                  std=std_pix)
+
+_USE_CLIP_TRANSFORMS = False
+_CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073]
+_CLIP_STD = [0.26862954, 0.26130258, 0.27577711]
+_CLIP_TRAIN_TRANSFORM = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.Resize(224, interpolation=InterpolationMode.BICUBIC),
+    transforms.RandomResizedCrop(224, scale=(0.9, 1.0), interpolation=InterpolationMode.BICUBIC),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    transforms.Normalize(_CLIP_MEAN, _CLIP_STD),
+])
+CLIP_BACKBONE_NAMES = {'clip-rn50', 'clip-vitb32'}
+_CLIP_EVAL_TRANSFORM = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.Resize(224, interpolation=InterpolationMode.BICUBIC),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize(_CLIP_MEAN, _CLIP_STD),
+])
 
 
 # transform_train = transforms.Compose([
@@ -268,6 +289,8 @@ def l2_normalize(x):
 
 
 def _get_image_transform(dataset, train=False):
+    if _USE_CLIP_TRANSFORMS:
+        return _CLIP_TRAIN_TRANSFORM if train else _CLIP_EVAL_TRANSFORM
     if dataset == 'FC100':
         if train:
             # A light augmentation option is enabled by --augment_normal_train
@@ -505,8 +528,11 @@ def get_args():
     parser.add_argument('--train_expand_N', type=int, default=4, help='Multiply N in train episodes (e.g., FC100 default 4)')
     parser.add_argument('--freeze_backbone_after', type=int, default=-1, help='Round index after which backbone features stop training (-1 disables)')
     parser.add_argument('--use_transform_layer', type=int, default=0, help='Enable client-side transform layer before shared head (0/1)')
+    parser.add_argument('--adapter_bottleneck_dim', type=int, default=0, help='Bottleneck adapter dim between features and head (0 disables)')
+    parser.add_argument('--adapter_residual', type=int, default=1, help='Use residual connection for adapter (0/1)')
     parser.add_argument('--film_adapter', type=int, default=0, help='Enable FiLM/Affine adapter on pooled features (0/1)')
     parser.add_argument('--film_init_scale', type=float, default=1.0, help='Initial scale for FiLM gamma (beta initialized to 0)')
+    parser.add_argument('--use_clip_transforms', type=int, default=0, help='Use CLIP-style preprocessing transforms (0/1)')
     parser.add_argument('--dp_accountant', type=str, default='rdp', choices=['rdp','prv'], help='Privacy accountant type for epsilon reporting')
     parser.add_argument('--attack_dump', type=int, default=0, help='Enable attack artifact dumping (0/1)')
     parser.add_argument('--attack_dump_rounds', type=str, default=None, help='Comma-separated rounds or "all" to dump attack artifacts')
@@ -517,6 +543,9 @@ def get_args():
     parser.add_argument('--normal_local_steps', type=int, default=10, help='Max optimizer steps per client per round in normal local training')
     parser.add_argument('--augment_normal_train', type=int, default=0, help='Use simple data augmentation in normal local training (0/1)')
     args = parser.parse_args()
+    if args.model in CLIP_BACKBONE_NAMES and not args.use_clip_transforms:
+        args.use_clip_transforms = 1
+    globals()['_USE_CLIP_TRANSFORMS'] = bool(args.use_clip_transforms)
     return args
 
 
@@ -594,7 +623,7 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
 
 
 def get_dp_parameter_names(model, target='full'):
-    excluded_substrings = ('few_classify', 'transformer', 'transform_layer', 'bn', 'running_mean', 'running_var', 'num_batches_tracked')
+    excluded_substrings = ('few_classify', 'transformer', 'transform_layer', 'bn', 'running_mean', 'running_var', 'num_batches_tracked', 'clip_model')
     head_includes = ('l1', 'l2', 'all_classify')
     names = []
     # Only tensors returned here participate in DP aggregation; everything else remains
@@ -1220,6 +1249,7 @@ if __name__ == '__main__':
             # Group-wise adaptive states
             dp_clip_state['__HEAD__'] = {'C': float(args.dp_clip_norm)}
             dp_clip_state['__FEAT__'] = {'C': max(float(args.dp_clip_norm) / 5.0, 0.5)}
+            dp_clip_state['__ADAPTER__'] = {'C': float(args.dp_clip_norm)}
 
         for round in range(n_comm_rounds):
             #logger.info("in comm round:" + str(round))
@@ -1255,7 +1285,8 @@ if __name__ == '__main__':
                         if (
                             key!='few_classify.weight' and key!='few_classify.bias' and
                             'transformer' not in key and 'transform_layer' not in key and
-                            'bn' not in key and 'running_mean' not in key and 'running_var' not in key and 'num_batches_tracked' not in key
+                            'bn' not in key and 'running_mean' not in key and 'running_var' not in key and
+                            'num_batches_tracked' not in key and 'clip_model' not in key
                         ):
                             net_para[key]=global_w[key]
                     net.load_state_dict(net_para)

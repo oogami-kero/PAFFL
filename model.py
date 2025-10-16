@@ -14,8 +14,18 @@ try:
 except Exception as _e:
     _TORCHTEXT_AVAILABLE = False
     _TORCHTEXT_IMPORT_ERROR = _e
+try:
+    import open_clip  # type: ignore
+    _OPEN_CLIP_AVAILABLE = True
+except Exception:
+    _OPEN_CLIP_AVAILABLE = False
 from embedding.meta import RNN
 from embedding.auxiliary.factory import get_embedding
+
+_CLIP_BACKBONES = {
+    "clip-rn50": ("RN50", "openai"),
+    "clip-vitb32": ("ViT-B-32", "openai"),
+}
 
 
 def l2_normalize(x):
@@ -883,8 +893,12 @@ class ModelFed_Adp(nn.Module):
     def __init__(self, base_model, out_dim, n_classes, total_classes, net_configs=None, args=None):
         super(ModelFed_Adp, self).__init__()
         self.use_transform_layer = bool(getattr(args, 'use_transform_layer', 0))
+        self.adapter_bottleneck_dim = int(getattr(args, 'adapter_bottleneck_dim', 0))
+        self.adapter_residual = bool(getattr(args, 'adapter_residual', 1))
         self.use_film_adapter = bool(getattr(args, 'film_adapter', 0))
         self.film_init_scale = float(getattr(args, 'film_init_scale', 1.0))
+        self.is_clip_backbone = False
+        self.clip_model = None
 
         if base_model == "resnet50-cifar10" or base_model == "resnet50-cifar100" or base_model == "resnet50-smallkernel" or base_model == "resnet50":
             basemodel = ResNet50_cifar10()
@@ -914,6 +928,21 @@ class ModelFed_Adp(nn.Module):
                 self.features = resnet12(avg_pool=True, drop_rate=0.1)
                 #num_ftrs = 16000
                 num_ftrs = 640
+        elif base_model in _CLIP_BACKBONES:
+            if not _OPEN_CLIP_AVAILABLE:
+                raise ImportError("open_clip is required for CLIP backbones. Install open_clip to continue.")
+            clip_name, clip_pretrained = _CLIP_BACKBONES[base_model]
+            clip_model, _, _ = open_clip.create_model_and_transforms(clip_name, pretrained=clip_pretrained)
+            clip_model.eval()
+            for p in clip_model.parameters():
+                p.requires_grad = False
+            self.clip_model = clip_model
+            self.is_clip_backbone = True
+            num_ftrs = clip_model.visual.output_dim
+            # Placeholder so attribute exists; not used when is_clip_backbone=True
+            self.features = nn.Identity()
+        else:
+            raise ValueError(f"Unknown base_model '{base_model}'")
 
         # summary(self.features.to('cuda:0'), (3,32,32))
         # print("features:", self.features)
@@ -921,6 +950,15 @@ class ModelFed_Adp(nn.Module):
         self.l1 = nn.Linear(num_ftrs, num_ftrs)
         self.l2 = nn.Linear(num_ftrs, out_dim)
 
+        if self.adapter_bottleneck_dim and self.adapter_bottleneck_dim > 0:
+            r = int(self.adapter_bottleneck_dim)
+            self.l1_adapter_down = nn.Linear(num_ftrs, r)
+            self.l1_adapter_up = nn.Linear(r, num_ftrs)
+            self.adapter_act = nn.GELU()
+        else:
+            self.l1_adapter_down = None
+            self.l1_adapter_up = None
+            self.adapter_act = None
 
         # last layer for few
         self.few_classify = nn.Linear(num_ftrs, n_classes)
@@ -951,25 +989,26 @@ class ModelFed_Adp(nn.Module):
             raise ("Invalid model name. Check the config file and pass one of: resnet18 or resnet50")
 
     def forward(self, x_ori, all_classify=False):
-        h = self.features(x_ori)
-
-        # Ensure batch dimension is preserved (avoid squeeze collapsing B=1)
-        if isinstance(h, torch.Tensor):
-            if h.dim() > 2:
-                ebd = h.flatten(1)
-            elif h.dim() == 1:
-                ebd = h.unsqueeze(0)
+        if self.is_clip_backbone and self.clip_model is not None:
+            ebd = self.clip_model.encode_image(x_ori).float()
+        else:
+            h = self.features(x_ori)
+            if isinstance(h, torch.Tensor):
+                if h.dim() > 2:
+                    ebd = h.flatten(1)
+                elif h.dim() == 1:
+                    ebd = h.unsqueeze(0)
+                else:
+                    ebd = h
             else:
                 ebd = h
-        else:
-            ebd = h
-        # print("h after:", h)
-        #x = self.l1(h)
-        #x = F.relu(x)
-        #x = self.l2(x)
 
         if self.use_transform_layer:
             ebd = self.transform_layer(ebd)
+
+        if self.l1_adapter_down is not None and self.l1_adapter_up is not None:
+            a = self.l1_adapter_up(self.adapter_act(self.l1_adapter_down(ebd)))
+            ebd = ebd + a if self.adapter_residual else a
 
         if self.use_film_adapter:
             # Apply FiLM affine transform to the pooled feature
