@@ -990,7 +990,12 @@ class ModelFed_Adp(nn.Module):
 
     def forward(self, x_ori, all_classify=False):
         if self.is_clip_backbone and self.clip_model is not None:
-            ebd = self.clip_model.encode_image(x_ori).float()
+            # Run CLIP under no_grad to avoid building graphs and capping memory
+            # (we keep CLIP frozen; grads are only needed for head/adapter layers).
+            with torch.no_grad():
+                ebd = self.clip_model.encode_image(x_ori).float()
+            # Ensure no residual grad history leaks into the head path
+            ebd = ebd.detach()
         else:
             h = self.features(x_ori)
             if isinstance(h, torch.Tensor):
