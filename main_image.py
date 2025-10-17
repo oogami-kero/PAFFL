@@ -547,7 +547,7 @@ def get_args():
     return args
 
 
-def init_nets(net_configs, n_parties, args, device='cpu'):
+def init_nets(net_configs, n_parties, args, device='cpu', shared_clip_model=None):
     nets = {net_i: None for net_i in range(n_parties)}
     if args.dataset in {'mnist', 'cifar10', 'svhn', 'fmnist'}:
         n_classes = 10
@@ -588,7 +588,7 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
             ebd=WORDEBD(args.finetune_ebd)
         for net_i in range(n_parties):
             if args.dataset=='FC100' or args.dataset=='miniImageNet':
-                net = ModelFed_Adp(args.model, args.out_dim, n_classes, total_classes, net_configs, args)
+                net = ModelFed_Adp(args.model, args.out_dim, n_classes, total_classes, net_configs, args, shared_clip_model=shared_clip_model)
             else:
                 net = LSTMAtt(WORDEBD(args.finetune_ebd), args.out_dim, n_classes, total_classes,args)
             if device == 'cpu':
@@ -600,10 +600,10 @@ def init_nets(net_configs, n_parties, args, device='cpu'):
         # Normal mode: initialize same model; training/eval will use all_classify head
         for net_i in range(n_parties):
             if args.dataset=='FC100' or args.dataset=='miniImageNet':
-                net = ModelFed_Adp(args.model, args.out_dim, n_classes if 'n_classes' in locals() else 5, total_classes, net_configs, args)
+                net = ModelFed_Adp(args.model, args.out_dim, n_classes if 'n_classes' in locals() else 5, total_classes, net_configs, args, shared_clip_model=shared_clip_model)
             else:
                 # For datasets like cifar10/cifar100/tinyimagenet, ensure total_classes is defined above
-                net = ModelFed_Adp(args.model, args.out_dim, n_classes if 'n_classes' in locals() else 5, total_classes if 'total_classes' in locals() else (10 if args.dataset=='cifar10' else (100 if args.dataset=='cifar100' else 200)), net_configs, args)
+                net = ModelFed_Adp(args.model, args.out_dim, n_classes if 'n_classes' in locals() else 5, total_classes if 'total_classes' in locals() else (10 if args.dataset=='cifar10' else (100 if args.dataset=='cifar100' else 200)), net_configs, args, shared_clip_model=shared_clip_model)
             if device == 'cpu':
                 net.to(device)
             else:
@@ -1186,10 +1186,13 @@ if __name__ == '__main__':
     logger.info("Initializing nets")
     # Honor CPU selection; otherwise use GPU path
     _dev_flag = 'cpu' if str(args.device).lower().startswith('cpu') else 'gpu'
-    nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.n_parties, args, device=_dev_flag)
 
+    # Initialize a single global model first; if it contains CLIP, share it across clients
     global_models, global_model_meta_data, global_layer_type = init_nets(args.net_config, 1, args, device=_dev_flag)
     global_model = global_models[0]
+    shared_clip = getattr(global_model, 'clip_model', None)
+
+    nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.n_parties, args, device=_dev_flag, shared_clip_model=shared_clip)
     attack_ctx = _init_attack_context_image(args, device, global_model, X_train, y_train, X_test, y_test, traindata_cls_counts)
     n_comm_rounds = args.comm_round
     if args.load_model_file and args.alg != 'plot_visual':

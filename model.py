@@ -890,7 +890,7 @@ class ModelFedCon_noheader(nn.Module):
 
 class ModelFed_Adp(nn.Module):
 
-    def __init__(self, base_model, out_dim, n_classes, total_classes, net_configs=None, args=None):
+    def __init__(self, base_model, out_dim, n_classes, total_classes, net_configs=None, args=None, shared_clip_model=None):
         super(ModelFed_Adp, self).__init__()
         self.use_transform_layer = bool(getattr(args, 'use_transform_layer', 0))
         self.adapter_bottleneck_dim = int(getattr(args, 'adapter_bottleneck_dim', 0))
@@ -931,11 +931,14 @@ class ModelFed_Adp(nn.Module):
         elif base_model in _CLIP_BACKBONES:
             if not _OPEN_CLIP_AVAILABLE:
                 raise ImportError("open_clip is required for CLIP backbones. Install open_clip to continue.")
-            clip_name, clip_pretrained = _CLIP_BACKBONES[base_model]
-            clip_model, _, _ = open_clip.create_model_and_transforms(clip_name, pretrained=clip_pretrained)
-            clip_model.eval()
-            for p in clip_model.parameters():
-                p.requires_grad = False
+            if shared_clip_model is not None:
+                clip_model = shared_clip_model
+            else:
+                clip_name, clip_pretrained = _CLIP_BACKBONES[base_model]
+                clip_model, _, _ = open_clip.create_model_and_transforms(clip_name, pretrained=clip_pretrained)
+                clip_model.eval()
+                for p in clip_model.parameters():
+                    p.requires_grad = False
             self.clip_model = clip_model
             self.is_clip_backbone = True
             num_ftrs = clip_model.visual.output_dim
